@@ -1,0 +1,73 @@
+{
+  "reference_path": "C:\\Users\\aarav\\OneDrive\\Desktop\\job applications\\new projects\\ChurnXGB upgrade\\reports\\monitoring\\reference_profile.json",
+  "n_rows_current": 26993,
+  "psi_threshold_warn": 0.1,
+  "psi_threshold_alert": 0.25,
+  "summary": {
+    "n_ok": 9,
+    "n_warn": 0,
+    "n_alert": 0,
+    "n_missing_ref": 0
+  },
+  "features": {
+    "rev_sum_30d": {
+      "missing_rate_current": 0.0,
+      "psi": 0.015437502065667484,
+      "status": "ok"
+    },
+    "rev_sum_90d": {
+      "missing_rate_current": 0.0,
+      "psi": 0.027807187519735238,
+      "status": "ok"
+    },
+    "rev_sum_180d": {
+      "missing_rate_current": 0.0,
+      "psi": 0.0816332723793324,
+      "status": "ok"
+    },
+    "freq_30d": {
+      "missing_rate_current": 0.0,
+      "psi": 0.0025425472440961322,
+      "status": "ok"
+    },
+    "freq_90d": {
+      "missing_rate_current": 0.0,
+      "psi": 0.017815924208568756,
+      "status": "ok"
+    },
+    "rev_std_90d": {
+      "missing_rate_current": 0.0,
+      "psi": 0.012009801047113824,
+      "status": "ok"
+    },
+    "return_count_90d": {
+      "missing_rate_current": 0.0,
+      "psi": 0.001228343920343338,
+      "status": "ok"
+    },
+    "aov_90d": {
+      "missing_rate_current": 0.0,
+      "psi": 0.013075329133898726,
+      "status": "ok"
+    },
+    "gap_days_prev": {
+      "missing_rate_current": 0.0,
+      "psi": 0.012930520723043886,
+      "status": "ok"
+    }
+  },
+  "score_current_stats": {
+    "missing_rate": 0.0,
+    "mean": 0.3225098961073709,
+    "p50": 0.29127055406570435,
+    "p90": 0.6741578578948975,
+    "p99": 0.8059009265899658
+  },
+  "score_reference_stats": {
+    "missing_rate": 0.0,
+    "mean": 0.3740300307720646,
+    "p50": 0.37494906783103943,
+    "p90": 0.7152002096176147,
+    "p99": 0.8659207832813266
+  }
+}

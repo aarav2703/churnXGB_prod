@@ -1,0 +1,30 @@
+data:
+  raw_csv: data/raw/online_retail_II.csv
+
+label:
+  horizon_days: 90
+
+split:
+  train_end: "2010-06"
+  val_start: "2010-07"
+  val_end: "2010-08"
+  test_start: "2010-09"
+  test_end: "2010-10"
+
+eval:
+  budgets: [0.05, 0.10, 0.20]
+
+
+mlflow:
+  tracking_uri: "sqlite:///mlflow.db"
+  experiment_name: "churnxgb"
+  run_name_prefix: "churn_xgb"
+
+model:
+  n_estimators: 300
+  max_depth: 6
+  learning_rate: 0.05
+  subsample: 0.9
+  colsample_bytree: 0.9
+  reg_lambda: 1.0
+  random_state: 42

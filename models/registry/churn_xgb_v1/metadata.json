@@ -1,0 +1,5 @@
+{
+  "model_name": "churn_xgb_v1",
+  "model_path": "C:\\Users\\aarav\\OneDrive\\Desktop\\job applications\\new projects\\ChurnXGB upgrade\\models\\registry\\churn_xgb_v1\\model.joblib",
+  "feature_cols_path": "C:\\Users\\aarav\\OneDrive\\Desktop\\job applications\\new projects\\ChurnXGB upgrade\\models\\registry\\churn_xgb_v1\\feature_cols.json"
+}

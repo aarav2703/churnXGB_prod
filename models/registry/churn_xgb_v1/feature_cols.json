@@ -1,0 +1,11 @@
+[
+  "rev_sum_30d",
+  "rev_sum_90d",
+  "rev_sum_180d",
+  "freq_30d",
+  "freq_90d",
+  "rev_std_90d",
+  "return_count_90d",
+  "aov_90d",
+  "gap_days_prev"
+]

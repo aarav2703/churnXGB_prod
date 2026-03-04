@@ -1,0 +1,15 @@
+artifact_uri: file:C:/Users/aarav/OneDrive/Desktop/job applications/new projects/ChurnXGB
+  upgrade/mlruns/229998367126907270/eca9b1650fef4d20a6ee5242c247ea97/artifacts
+end_time: 1772599548469
+entry_point_name: ''
+experiment_id: '229998367126907270'
+lifecycle_stage: active
+run_id: eca9b1650fef4d20a6ee5242c247ea97
+run_name: churn_xgb_v1
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1772599541029
+status: 3
+tags: []
+user_id: aarav

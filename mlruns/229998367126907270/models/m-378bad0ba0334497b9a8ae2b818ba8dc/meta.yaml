@@ -1,0 +1,11 @@
+artifact_location: file:C:/Users/aarav/OneDrive/Desktop/job applications/new projects/ChurnXGB
+  upgrade/mlruns/229998367126907270/models/m-378bad0ba0334497b9a8ae2b818ba8dc/artifacts
+creation_timestamp: 1772599541551
+experiment_id: '229998367126907270'
+last_updated_timestamp: 1772599548392
+model_id: m-378bad0ba0334497b9a8ae2b818ba8dc
+model_type: null
+name: model
+source_run_id: eca9b1650fef4d20a6ee5242c247ea97
+status: 2
+status_message: null

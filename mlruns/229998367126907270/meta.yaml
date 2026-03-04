@@ -1,0 +1,8 @@
+artifact_location: file:C:/Users/aarav/OneDrive/Desktop/job applications/new projects/ChurnXGB
+  upgrade/mlruns/229998367126907270
+creation_time: 1772599540326
+experiment_id: '229998367126907270'
+last_update_time: 1772599540326
+lifecycle_stage: active
+name: churnxgb
+workspace: default

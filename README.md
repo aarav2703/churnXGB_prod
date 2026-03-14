@@ -1,162 +1,254 @@
-# ChurnXGB — Customer Churn Risk Scoring Under Budget Constraints (Productionized)
+# ChurnXGB - Leakage-Aware Churn Targeting Under Budget Constraints
 
-The core idea is simple: churn modeling is a decision problem. If you can only contact 5–20% of customers, accuracy alone doesn’t matter—what matters is how much customer value you can proactively protect with a limited outreach budget.
+I built this project to answer a version of churn modeling that feels much closer to how a retention team would actually use a model in practice.
 
-This repo contains an end-to-end system that:
-* builds point-in-time customer-month snapshots (no leakage),
-* trains an XGBoost churn probability model,
-* ranks customers using a Value-at-Risk policy under budget constraints,
-* logs experiments + artifacts to MLflow (with dataset hashing),
-* “promotes” a run to production and scores from the promoted MLflow run, and
-* writes a drift report each scoring run (feature PSI + score distribution stats).
+Instead of asking only, "Can I predict who will churn?", I framed the problem as, "If a team can only contact 5% to 20% of customers, which customers should they prioritize to protect the most value at risk?"
 
-## What problem am I solving?
-Most churn projects stop at “predict churn probability.” In practice, retention teams ask:
+That framing shaped most of my design choices:
+- I built point-in-time customer-month snapshots so features only use information available at decision time.
+- I defined churn operationally as no purchase in the next 90 days after the cutoff timestamp.
+- I evaluated models not just with standard ML metrics, but also with Value-at-Risk@K and related top-K targeting metrics.
+- I compared a more complex model family against simpler baselines and heuristic policies instead of assuming the most complex model would win.
+- I added MLflow logging, drift outputs, and a lightweight Streamlit dashboard so the repo feels like an end-to-end applied ML project rather than only a modeling notebook.
 
-> “If I can only reach out to K% of customers, who should I contact to maximize retained revenue?”
+The repository now includes:
+- point-in-time feature generation and 90-day churn labeling
+- multi-model training across XGBoost, Logistic Regression, and LightGBM
+- business-aware evaluation with Value-at-Risk@K plus broader ML metrics
+- rolling temporal backtesting
+- MLflow experiment logging and model promotion
+- interpretability artifacts
+- PSI-based drift monitoring
+- a Streamlit dashboard that loads saved artifacts
 
-So I frame the objective as target selection under a fixed budget, not pure classification.
+## Why I Framed The Problem This Way
 
-## Dataset
-* **Source:** Online Retail II transactional dataset
-* **Raw grain:** transaction lines
+Most churn projects stop at probability ranking, but I wanted this project to reflect the real decision constraint a retention team faces: limited outreach capacity.
 
-I transform it into:
-* invoice-level records
-* deduplicated customer “events”
-* customer-month snapshots
+If a team can only intervene on a small share of customers, then a model with a decent AUC is not automatically useful. What matters is whether the ranking captures customers who are both likely to churn and important enough to prioritize.
 
-*The raw Online Retail II CSV is placed in `data/raw/` and is ignored via `.gitignore` to prevent committing large datasets. All intermediate artifacts are reproducible from this source.*
+That is why I used the policy:
 
-## Operational churn definition (no explicit churn label)
-There is no explicit churn label, so I define it operationally:
-
-* Each row is a customer-month snapshot.
-* Let `T` be the customer’s last purchase timestamp in that month.
-* A customer is labeled churned at time `T` if they make no purchase in the next 90 days after `T`.
-
-**Key constraint I enforced throughout:**
-* All features are computed using data available **up to** `T`
-* Labels are computed strictly using events **after** `T`
-
-This mirrors how churn models are deployed in practice and prevents leakage.
-
-## Why the project uses “Value at Risk @ K%” instead of just AUC
-I evaluate models with Value at Risk @ K% (VaR@K):
-
-1. rank customers by a targeting / intervention policy
-2. take the top K% (K = 5%, 10%, 20%)
-3. compute how much positive customer value at risk exists among customers who actually churn
-
-**Policy used by the ML model:**
 `policy_ml = P(churn) * value_pos`
 
-Where `value_pos` is a pre-T value proxy available at decision time (I use trailing revenue, `rev_sum_90d`, clipped at 0).
+where `value_pos` is a pre-decision value proxy based on trailing 90-day revenue clipped at zero.
 
-**Why this matters:**
-A model can have a decent AUC and still be useless if it can’t prioritize the right customers under budget constraints. VaR@K is directly tied to the action you’d take in a real workflow (limited outreach).
+I made that choice deliberately because I did not want to "cheat" by using future value information that would not be available at scoring time.
 
-## Baselines (so ML has to earn its keep)
-Before training XGBoost, I include baselines that represent what teams often do in practice:
+## Problem Framing
 
-* **Random targeting** (control)
-* **Recency-based risk** (large time gap since previous purchase → higher risk)
-* **RFM heuristic risk** (rank-based combination of Recency, Frequency, Monetary)
+Each row is a customer-month snapshot. Let `T` be the customer's last purchase timestamp in that month.
 
-If the ML policy doesn’t beat these, it’s not useful.
+- Features use data available up to `T`
+- Labels use events strictly after `T`
+- Churn is defined as no purchase in the next 90 days after `T`
 
-## Feature engineering (point-in-time)
-All features are constructed from customer behavior strictly prior to `T`:
+I used this setup because it mirrors how a churn model would actually be deployed and helps avoid obvious leakage from future behavior.
 
-* trailing revenue sums: 30d / 90d / 180d
-* purchase frequency: 30d / 90d
-* revenue volatility (std): 90d
-* return behavior: count of negative-revenue events (90d)
-* average order value (AOV proxy): 90d
-* recency gap: days since previous event (`gap_days_prev`)
+## Dataset
 
-I explicitly avoid degenerate features that break under this framing.
+- Source: Online Retail II transactional dataset
+- Raw grain: transaction lines
+- Current processed modeling table: 26,993 customer-month rows
+- Current event table: 44,571 customer events
+- Observed monthly span in processed data: `2009-12` through `2011-12`
 
-## Results (held-out test set)
-Using the repo’s current evaluation output (`reports/evaluation/test_results.csv`), the ML policy improves captured value-at-risk compared with the best heuristic baseline:
+I started from raw transaction lines and converted them into a customer-month prediction problem because that gave me a realistic decision grain for retention targeting while still preserving temporal ordering.
 
-* **5% budget:** 101,521 vs 75,090 (+35.2%)
-* **10% budget:** 164,788 vs 107,171 (+53.8%)
-* **20% budget:** 254,018 vs 197,438 (+28.7%)
+## Feature Engineering
 
-These are decision improvements under capacity constraints, not just “better AUC.”
+I computed features at the customer-month cutoff using only prior customer behavior:
 
-## What makes this “productionized” (not just a notebook)
-I built the repo so it has a real lifecycle:
+- trailing revenue sums: `rev_sum_30d`, `rev_sum_90d`, `rev_sum_180d`
+- purchase frequency: `freq_30d`, `freq_90d`
+- revenue volatility: `rev_std_90d`
+- return behavior: `return_count_90d`
+- average order value proxy: `aov_90d`
+- recency gap: `gap_days_prev`
 
-### 1) Deterministic pipelines (repeatable artifacts)
-* `build_features` writes canonical datasets to `data/processed/`
-* `train` writes reports and model artifacts + MLflow run
-* `score` reads the promoted run artifact and produces top-K lists + monitoring outputs
+I focused on a compact, interpretable feature set rather than trying to build a very wide table with weakly justified variables. The goal was to show solid point-in-time feature engineering and keep the project understandable in an interview.
 
-### 2) MLflow tracking with reproducibility
-Training logs:
-* model params
-* VaR@K metrics + uplift metrics
-* evaluation artifacts (`val_results.csv`, `test_results.csv`)
-* a dataset hash (`data_version`) for reproducibility
+## Models I Compared
 
-### 3) Promotion + scoring from the promoted MLflow run
-* Training writes: `models/promoted/production.json` containing the promoted `run_id`
-* Scoring loads the model using: `runs:/<run_id>/model`
-* *So “promotion” actually changes what’s deployed/scored, instead of being a label.*
+I did not want the project to rely on a single model family, so I compared:
 
-### 4) Monitoring output each scoring run
-Drift report written to: `reports/monitoring/drift_latest.json`
-* **Feature drift:** PSI per feature (warn/alert thresholds)
-* **Score drift:** reference vs current score quantiles (mean, p50, p90, p99)
+- `xgboost`
+- `logistic_regression`
+- `lightgbm`
 
-### 5) One-command runbook
-There is a Windows PowerShell runbook that executes the entire system end-to-end.
+I also kept non-ML policy baselines because I wanted the learned models to earn their complexity:
 
-## Project structure
+- recency-based targeting
+- RFM-style targeting
+- random targeting baseline
+
+Including logistic regression was especially important to me because it gives a simpler benchmark and helps answer whether the tree models are actually adding value or just adding complexity.
+
+## Evaluation
+
+I kept the original business-first framing and then expanded the evaluation suite so the project would read more strongly to both data science recruiters and applied ML reviewers.
+
+### Business / targeting metrics
+
+- Value-at-Risk@K
+- fraction of total value-at-risk captured
+- Precision@K
+- Recall@K
+- Lift@K
+
+### ML metrics
+
+- ROC-AUC
+- PR-AUC
+- Brier score
+- calibration curve data
+
+### Saved plots
+
+Generated in `reports/figures/`:
+- ROC curve
+- Precision-Recall curve
+- lift curve
+- calibration curve
+- feature importance plot
+
+I added the broader metric suite because I wanted the project to show both business awareness and ML rigor. VaR@K is the metric I would emphasize in a retention setting, but PR-AUC, Brier score, and calibration still matter if I want to show that the underlying probabilities are sensible.
+
+## Current Results
+
+### Holdout comparison at 10% budget
+
+| model | val_value_at_risk | test_value_at_risk | test_roc_auc | test_pr_auc | test_brier_score |
+|:--|--:|--:|--:|--:|--:|
+| logistic_regression | 97,853.45 | 165,919.06 | 0.7335 | 0.5819 | 0.2016 |
+| xgboost | 76,760.36 | 164,787.80 | 0.7233 | 0.5805 | 0.2077 |
+| lightgbm | 72,032.55 | 164,581.86 | 0.7205 | 0.5749 | 0.2089 |
+
+Promoted model: `logistic_regression`
+
+One result I found interesting is that logistic regression won the current comparison. I like that outcome for this portfolio project because it shows I was willing to let the validation metric choose the best model instead of forcing the more complex model to be the headline result.
+
+### Promoted model test targeting metrics
+
+| budget_k | value_at_risk | var_covered_frac | precision_at_k | recall_at_k | lift_at_k |
+|:--|--:|--:|--:|--:|--:|
+| 5% | 108,496.47 | 0.1738 | 0.4604 | 0.0607 | 1.2140 |
+| 10% | 165,919.06 | 0.2658 | 0.4065 | 0.1072 | 1.0717 |
+| 20% | 260,599.82 | 0.4175 | 0.3939 | 0.2078 | 1.0385 |
+
+At the 10% budget level, the promoted model captures `165,919.06` in value at risk on the holdout split. Compared with the best heuristic baseline at the same budget, that is roughly a `54.8%` uplift in captured value at risk.
+
+### Temporal backtesting
+
+I added rolling expanding-window backtesting to move beyond a single holdout split and check whether performance is reasonably stable across time.
+
+Backtesting was run across 9 chronological folds:
+
+- `2010-06_2010-07`
+- `2010-08_2010-09`
+- `2010-10_2010-11`
+- `2010-12_2011-01`
+- `2011-02_2011-03`
+- `2011-04_2011-05`
+- `2011-06_2011-07`
+- `2011-08_2011-09`
+- `2011-10_2011-11`
+
+Backtest outputs are written to:
+- `reports/backtest_detail.csv`
+- `reports/backtest_summary.csv`
+- `reports/backtest_summary.md`
+
+I added this because I wanted a stronger answer to the question, "Does this model still work when the time window shifts?" That felt like a more credible applied ML signal than relying only on one train/validation/test split.
+
+## Interpretability And Monitoring
+
+I wanted the repo to show more than training and scoring, so I added:
+
+- feature importance artifacts in `reports/feature_importance.csv`
+- feature analysis writeup in `reports/feature_analysis.md`
+- drift monitoring outputs in `reports/monitoring/`
+
+For this version of the project, interpretability is lightweight by design. The goal was to make model behavior easier to inspect without turning the repo into a full interpretability platform.
+
+## Dashboard
+
+I added a Streamlit dashboard in `dashboard/app.py` so the saved outputs can be explored without retraining the models.
+
+The dashboard includes:
+- executive summary
+- policy simulator
+- model performance charts
+- explainability view
+- customer risk explorer
+- drift monitoring
+
+I made the dashboard artifact-driven on purpose. For a recruiter or reviewer, that is a much smoother demo flow than requiring a live retrain just to inspect results.
+
+### Dashboard Preview
+
+The first dashboard view highlights the executive summary, model comparison table, and budget-based policy simulator. I like this screen as a project overview because it quickly communicates the promoted model, the top-line metrics, and how the targeting policy behaves at a chosen budget.
+
+![Dashboard overview showing executive summary, model comparison, and policy simulator](reports/figures/dashboard_overview.png)
+
+The second dashboard view focuses on explainability and customer-level exploration. It shows the promoted model's feature importance, the ranked customer risk table, and the target flags used for downstream action lists.
+
+![Dashboard explainability and customer risk explorer view](reports/figures/dashboard_explain_explore.png)
+
+## Repository Structure
+
 ```text
 config/
   config.yaml
 
-src/churnxgb/
-  data/           # load + clean + invoice aggregation
-  labeling/       # churn label definition
-  features/       # event table + rolling feature engineering
-  baselines/      # recency + RFM heuristics
-  modeling/       # XGBoost training + MLflow model loading
-  policy/         # policy scoring: p(churn) * value_pos
-  evaluation/     # VaR@K metrics + reports
-  monitoring/     # drift reference + drift report (PSI + score stats)
-  pipeline/       # build_features.py, train.py, score.py
-  utils/          # hashing (dataset versioning)
+data/
+  raw/
+  interim/
+  processed/
 
-reports/
-  evaluation/
-  monitoring/
+dashboard/
+  app.py
+
+models/
+  registry/
+  promoted/
 
 outputs/
   predictions/
   targets/
 
-models/
-  registry/
-  promoted/
+reports/
+  evaluation/
+  figures/
+  monitoring/
+  *.md / *.csv summaries
+
+src/churnxgb/
+  data/
+  features/
+  labeling/
+  baselines/
+  modeling/
+  policy/
+  evaluation/
+  monitoring/
+  pipeline/
+  split/
+  utils/
+
+tests/
 ```
 
-## How to run
+## How To Run
 
-**Option A: one-command runbook (Windows)**
-From repo root:
+### 1. Install dependencies
+
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\run.ps1
-```
-Skip rebuilding features:
-```powershell
-powershell -ExecutionPolicy Bypass -File .\run.ps1 -SkipBuildFeatures
+pip install -r requirements.txt
 ```
 
-**Option B: run step-by-step**
+### 2. Run the pipeline
+
 ```powershell
 $env:PYTHONPATH = "$PWD\src"
 
@@ -165,27 +257,81 @@ python -m churnxgb.pipeline.train
 python -m churnxgb.pipeline.score
 ```
 
-## Key outputs
+Or use the Windows runbook:
 
-### Training
-* **Evaluation reports:** `reports/evaluation/val_results.csv`, `reports/evaluation/test_results.csv`
-* **Drift reference profile:** `reports/monitoring/reference_profile.json`
-* **Promotion pointer:** `models/promoted/production.json`
-* **MLflow DB:** `mlflow.db`
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run.ps1
+```
 
-### Scoring
-* **Predictions table:** `outputs/predictions/predictions_all.parquet`
-* **Target lists (top-K by policy_ml):** `outputs/targets/targets_all_k05.parquet`, `outputs/targets/targets_all_k10.parquet`, `outputs/targets/targets_all_k20.parquet`
-* **Drift report:** `reports/monitoring/drift_latest.json`
+### 3. Run tests
 
-## Small implementation notes (why I did it this way)
-* **Customer event deduping:** I create a canonical event table at (CustomerID, InvoiceDate) so multiple invoices at the same timestamp don’t inflate rolling features or labels.
-* **Decision-first evaluation:** I kept ROC-AUC as a secondary check, but prioritized VaR@K because that’s what drives an actual retention workflow.
-* **Value proxy is pre-T:** it’s tempting to use “future 90d revenue” as value, but churners have no purchases by definition. A production system needs a value proxy known at decision time.
-* **Promotion is tied to run_id:** a promotion record that only points to a local file is easy to fake. Using `runs:/<run_id>/model` makes the lifecycle credible.
-* **Monitoring is lightweight but real:** PSI on features + score quantiles gives a practical signal without turning this into a full platform.
+```powershell
+pytest -q
+```
 
-## Next ideas (if I extend this further)
-* Add a scheduler (Prefect/Airflow) for recurring train/score runs
-* Add delayed-label performance tracking (because churn labels mature after 90 days)
-* Add CI tests (leakage checks, schema checks, metric tests)
+### 4. Launch the dashboard
+
+```powershell
+streamlit run dashboard/app.py
+```
+
+The dashboard reads saved artifacts and does not retrain models live.
+
+## Key Outputs
+
+### Training and evaluation
+
+- `reports/model_comparison.csv`
+- `reports/model_comparison.md`
+- `reports/model_eval_summary.md`
+- `reports/backtest_summary.csv`
+- `reports/backtest_summary.md`
+- `reports/feature_importance.csv`
+- `reports/feature_analysis.md`
+- `reports/final_upgrade_summary.md`
+- `reports/final_results_summary.md`
+- `reports/evaluation/classification_metrics.csv`
+- `reports/evaluation/policy_metrics_all_models.csv`
+
+### Monitoring and scoring
+
+- `reports/monitoring/reference_profile.json`
+- `reports/monitoring/drift_latest.json`
+- `outputs/predictions/predictions_all.parquet`
+- `outputs/targets/targets_all_k05.parquet`
+- `outputs/targets/targets_all_k10.parquet`
+- `outputs/targets/targets_all_k20.parquet`
+
+### Promotion and experiment tracking
+
+- `models/promoted/production.json`
+- `mlflow.db`
+- `mlruns/`
+
+## Reproducibility Notes
+
+- The pipeline logs a SHA-256 hash of the processed feature table as `data_version`.
+- Training logs metrics and artifacts to MLflow.
+- The promoted model record points to the selected MLflow run id.
+- `requirements.txt` captures the runtime dependencies used for the upgraded pipeline.
+
+I also added tests for temporal splitting, leakage-safe feature selection, feature schema, and metric sanity because I wanted a few targeted safeguards without turning this into a heavy software engineering project.
+
+## Known Limitations
+
+- Delayed-label performance tracking after future labels mature is not yet implemented.
+- Monitoring is intentionally lightweight: feature PSI plus score distribution summary stats.
+- The dashboard is designed for portfolio/demo use, not production serving.
+- Environment compatibility could still be tightened further, especially around package version consistency.
+
+## What I Would Improve Next
+
+If I continued this project, the next improvements I would prioritize are:
+
+- lightweight hyperparameter search using the temporal validation framework
+- explicit probability calibration comparisons
+- cohort-level error analysis
+- delayed-label evaluation of scored cohorts
+- slightly stronger dashboard storytelling and drift alert summaries
+
+I think those would add the most value for data science and applied ML recruiting without overcomplicating the repository.

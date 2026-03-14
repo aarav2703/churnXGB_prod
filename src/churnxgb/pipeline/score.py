@@ -18,6 +18,13 @@ from churnxgb.monitoring.drift import drift_report, top_psi_features
 from churnxgb.utils.hashing import sha256_file
 
 
+def _resolve_tracking_uri(repo_root: Path, tracking_uri: str) -> str:
+    if tracking_uri.startswith("file:./") or tracking_uri == "file:mlruns":
+        abs_path = (repo_root / "mlruns").resolve()
+        return "file:" + str(abs_path).replace("\\", "/")
+    return tracking_uri
+
+
 def _write_targets(
     df: pd.DataFrame, out_dir: Path, split_name: str, budgets: list[float]
 ) -> None:
@@ -72,6 +79,7 @@ def main() -> None:
     # MLflow setup (for logging drift artifacts)
     mlflow_cfg = cfg.get("mlflow", {})
     tracking_uri = mlflow_cfg.get("tracking_uri", "sqlite:///mlflow.db")
+    tracking_uri = _resolve_tracking_uri(repo_root, tracking_uri)
     mlflow.set_tracking_uri(tracking_uri)
     mlflow.set_experiment(mlflow_cfg.get("experiment_name", "churnxgb"))
 
@@ -107,6 +115,10 @@ def main() -> None:
 
     # Add policies (defines value_pos from trailing rev_sum_90d)
     df = add_policy_scores(df)
+    for k in budgets:
+        n = max(1, int(round(len(df) * float(k))))
+        top_idx = df.sort_values("policy_ml", ascending=False).head(n).index
+        df[f"target_k{int(k * 100):02d}"] = df.index.isin(top_idx).astype(int)
 
     # Drift monitoring
     ref_path = repo_root / "reports" / "monitoring" / "reference_profile.json"

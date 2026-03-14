@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import pandas as pd
 
-from churnxgb.evaluation.metrics import value_at_risk_at_k, total_value_at_risk
+from churnxgb.evaluation.metrics import (
+    top_k_classification_metrics,
+    total_value_at_risk,
+    value_at_risk_at_k,
+)
 
 
 def evaluate_policies(df: pd.DataFrame, budgets: list[float]) -> pd.DataFrame:
@@ -28,6 +32,7 @@ def evaluate_policies(df: pd.DataFrame, budgets: list[float]) -> pd.DataFrame:
     for pol in policies:
         for k in budgets:
             var_k = value_at_risk_at_k(df, pol, k)
+            cls = top_k_classification_metrics(df, pol, k)
             rows.append(
                 {
                     "policy": pol,
@@ -35,6 +40,7 @@ def evaluate_policies(df: pd.DataFrame, budgets: list[float]) -> pd.DataFrame:
                     "value_at_risk": var_k,
                     "total_value_at_risk": total_var,
                     "var_covered_frac": (var_k / total_var) if total_var > 0 else 0.0,
+                    **cls,
                 }
             )
 
@@ -45,6 +51,7 @@ def evaluate_policies(df: pd.DataFrame, budgets: list[float]) -> pd.DataFrame:
 
     for k in budgets:
         var_k = value_at_risk_at_k(shuffled, "policy_random", k)
+        cls = top_k_classification_metrics(shuffled, "policy_random", k)
         rows.append(
             {
                 "policy": "policy_random",
@@ -52,6 +59,7 @@ def evaluate_policies(df: pd.DataFrame, budgets: list[float]) -> pd.DataFrame:
                 "value_at_risk": var_k,
                 "total_value_at_risk": total_var,
                 "var_covered_frac": (var_k / total_var) if total_var > 0 else 0.0,
+                **cls,
             }
         )
 

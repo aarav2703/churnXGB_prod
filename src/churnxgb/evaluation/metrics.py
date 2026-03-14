@@ -1,5 +1,5 @@
 """
-Decision-focused metrics: Value at Risk @ K% under a targeting policy.
+Decision-focused and ranking metrics for budget-constrained targeting.
 """
 
 from __future__ import annotations
@@ -41,3 +41,39 @@ def total_value_at_risk(df: pd.DataFrame) -> float:
     sum of value_pos among churned customers.
     """
     return float(df.loc[df["churn_90d"] == 1, "value_pos"].sum())
+
+
+def top_k_classification_metrics(
+    df: pd.DataFrame, ranking_col: str, k: float
+) -> dict[str, float]:
+    """
+    Compute targeting-oriented classification metrics in the top-K slice.
+
+    Metrics are computed after ranking by `ranking_col` descending:
+    - targeted_count
+    - captured_churners
+    - precision_at_k
+    - recall_at_k
+    - lift_at_k
+    """
+    if not (0 < k <= 1):
+        raise ValueError("k must be in (0, 1].")
+
+    use = df.sort_values(ranking_col, ascending=False).copy()
+    top_n = max(1, int(round(len(use) * k)))
+    top = use.iloc[:top_n]
+
+    positives_total = int(use["churn_90d"].sum())
+    captured = int(top["churn_90d"].sum())
+    precision = float(captured / top_n) if top_n > 0 else 0.0
+    recall = float(captured / positives_total) if positives_total > 0 else 0.0
+    base_rate = float(positives_total / len(use)) if len(use) > 0 else 0.0
+    lift = float(precision / base_rate) if base_rate > 0 else 0.0
+
+    return {
+        "targeted_count": float(top_n),
+        "captured_churners": float(captured),
+        "precision_at_k": precision,
+        "recall_at_k": recall,
+        "lift_at_k": lift,
+    }

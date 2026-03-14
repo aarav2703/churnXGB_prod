@@ -1,0 +1,24 @@
+artifact_path: file:C:/Users/aarav/OneDrive/Desktop/job applications/new projects/ChurnXGB
+  upgrade/mlruns/1/models/m-f7e9b550dd4f4bddaf783b18e5254f7f/artifacts
+flavors:
+  python_function:
+    env:
+      conda: conda.yaml
+      virtualenv: python_env.yaml
+    loader_module: mlflow.sklearn
+    model_path: model.pkl
+    predict_fn: predict
+    python_version: 3.12.7
+  sklearn:
+    code: null
+    pickled_model: model.pkl
+    serialization_format: cloudpickle
+    sklearn_version: 1.5.1
+    skops_trusted_types: null
+mlflow_version: 3.10.0
+model_id: m-f7e9b550dd4f4bddaf783b18e5254f7f
+model_size_bytes: 1022230
+model_uuid: m-f7e9b550dd4f4bddaf783b18e5254f7f
+prompts: null
+run_id: 8ae2d6cbe809462eb2c1e5e755bb45d3
+utc_time_created: '2026-03-14 20:48:10.649463'

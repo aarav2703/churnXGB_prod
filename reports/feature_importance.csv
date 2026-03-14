@@ -1,0 +1,10 @@
+feature,importance,source
+freq_90d,1.8878845027129447,abs_logistic_coef
+rev_sum_180d,1.2901308320479958,abs_logistic_coef
+rev_sum_90d,0.9410792190353352,abs_logistic_coef
+rev_sum_30d,0.9310191127230656,abs_logistic_coef
+return_count_90d,0.2665304288739037,abs_logistic_coef
+gap_days_prev,0.2580651763939833,abs_logistic_coef
+freq_30d,0.21089729238196905,abs_logistic_coef
+rev_std_90d,0.14312318958251893,abs_logistic_coef
+aov_90d,0.07502004550723702,abs_logistic_coef

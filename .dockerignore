@@ -1,0 +1,13 @@
+.git
+.gitignore
+__pycache__/
+.pytest_cache/
+pytest-cache-files-*
+tests/
+tests_artifacts/
+dashboard/
+data/
+mlruns/
+mlflow.db
+outputs/
+reports/

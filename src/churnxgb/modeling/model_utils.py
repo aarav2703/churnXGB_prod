@@ -4,6 +4,8 @@ from pathlib import Path
 import json
 import joblib
 
+from churnxgb.inference.contracts import write_inference_contract
+
 
 def save_model_artifacts(
     repo_root: Path,
@@ -22,6 +24,7 @@ def save_model_artifacts(
     model_path = out_dir / "model.joblib"
     feats_path = out_dir / "feature_cols.json"
     meta_path = out_dir / "metadata.json"
+    contract_path = write_inference_contract(repo_root, model_name, feature_cols)
 
     joblib.dump(model, model_path)
 
@@ -32,6 +35,7 @@ def save_model_artifacts(
         "model_name": model_name,
         "model_path": str(model_path),
         "feature_cols_path": str(feats_path),
+        "inference_contract_path": str(contract_path),
     }
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)

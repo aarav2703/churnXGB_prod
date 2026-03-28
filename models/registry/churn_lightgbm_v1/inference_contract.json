@@ -1,0 +1,31 @@
+{
+  "inference_input_columns": [
+    "rev_sum_30d",
+    "rev_sum_90d",
+    "rev_sum_180d",
+    "freq_30d",
+    "freq_90d",
+    "rev_std_90d",
+    "return_count_90d",
+    "aov_90d",
+    "gap_days_prev"
+  ],
+  "inference_id_columns": [
+    "CustomerID",
+    "invoice_month",
+    "T"
+  ],
+  "training_only_columns": [
+    "has_future_purchase_90d",
+    "churn_90d",
+    "customer_value_90d"
+  ],
+  "prediction_output_columns": [
+    "CustomerID",
+    "invoice_month",
+    "T",
+    "churn_prob",
+    "value_pos",
+    "policy_ml"
+  ]
+}

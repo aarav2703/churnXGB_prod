@@ -9,7 +9,7 @@ That framing shaped most of my design choices:
 - I defined churn operationally as no purchase in the next 90 days after the cutoff timestamp.
 - I evaluated models not just with standard ML metrics, but also with Value-at-Risk@K and related top-K targeting metrics.
 - I compared a more complex model family against simpler baselines and heuristic policies instead of assuming the most complex model would win.
-- I added MLflow logging, drift outputs, and a lightweight Streamlit dashboard so the repo feels like an end-to-end applied ML project rather than only a modeling notebook.
+- I added MLflow logging, drift outputs, a modular scoring layer, a small FastAPI service, and a lightweight Streamlit dashboard so the repo feels like an end-to-end applied ML project rather than only a modeling notebook.
 
 The repository now includes:
 - point-in-time feature generation and 90-day churn labeling
@@ -17,9 +17,38 @@ The repository now includes:
 - business-aware evaluation with Value-at-Risk@K plus broader ML metrics
 - rolling temporal backtesting
 - MLflow experiment logging and model promotion
+- a clean inference contract that separates training-only columns from prediction-time inputs/outputs
+- a reusable scoring module used by both offline scoring and the API layer
+- a FastAPI inference service for batch-like request scoring
 - interpretability artifacts
 - PSI-based drift monitoring
 - a Streamlit dashboard that loads saved artifacts
+- a Dockerized API entrypoint for local containerized serving
+
+## System Overview
+
+At this point, the project works like a small end-to-end ML system rather than just a modeling script.
+
+In the offline pipeline, I start with raw transaction lines, clean them, aggregate them to customer events, build point-in-time customer-month snapshots, label 90-day churn, and train multiple models with temporal validation. Training logs metrics and artifacts to MLflow, saves a local model registry entry, and writes a lightweight promotion record for the selected model.
+
+From there, the promoted model can be used in two ways. The scoring pipeline reads the saved feature table and writes scored outputs plus targeting lists and drift artifacts. The API uses the same scoring logic through a reusable scoring module, but applies it to request data that matches the saved inference contract. The Streamlit dashboard stays artifact-driven and reads the saved outputs for review and demo purposes.
+
+## Architecture / Data Flow
+
+I found it helpful to think about the repo in six stages:
+
+1. `data/raw` -> `src/churnxgb/data` / `src/churnxgb/features`
+   Raw transaction lines are cleaned and converted into invoice, event, and customer-month tables.
+2. `data/processed/customer_month_features.parquet`
+   This is the core point-in-time modeling table used by both training and offline scoring.
+3. `src/churnxgb/pipeline/train.py`
+   Training does temporal splitting, model comparison, MLflow logging, promotion, backtesting, and reference drift profile creation.
+4. `models/promoted/production.json` + `models/registry/...`
+   These files define which model is currently promoted and what schema it expects at inference time.
+5. `src/churnxgb/pipeline/score.py` and `src/churnxgb/api/app.py`
+   Offline scoring and API inference both call the same modular scoring logic.
+6. `outputs/` + `reports/` + `dashboard/app.py`
+   Predictions, target lists, monitoring artifacts, and the dashboard all sit on top of saved outputs.
 
 ## Why I Framed The Problem This Way
 
@@ -277,6 +306,68 @@ streamlit run dashboard/app.py
 
 The dashboard reads saved artifacts and does not retrain models live.
 
+### 5. Launch the API locally
+
+```powershell
+$env:PYTHONPATH = "$PWD\src"
+uvicorn churnxgb.api.app:app --host 0.0.0.0 --port 8000
+```
+
+Example health check:
+
+```powershell
+Invoke-WebRequest http://127.0.0.1:8000/health
+```
+
+Example prediction request:
+
+```powershell
+$body = @{
+  rows = @(
+    @{
+      CustomerID = 12345
+      invoice_month = "2011-10"
+      T = "2011-10-31T00:00:00"
+      rev_sum_30d = 120.0
+      rev_sum_90d = 260.0
+      rev_sum_180d = 410.0
+      freq_30d = 2.0
+      freq_90d = 5.0
+      rev_std_90d = 45.0
+      return_count_90d = 0.0
+      aov_90d = 52.0
+      gap_days_prev = 11.0
+    }
+  )
+} | ConvertTo-Json -Depth 4
+
+Invoke-RestMethod `
+  -Uri http://127.0.0.1:8000/predict `
+  -Method Post `
+  -ContentType "application/json" `
+  -Body $body
+```
+
+### 6. Run the API in Docker
+
+Build the image:
+
+```powershell
+docker build -t churnxgb-api .
+```
+
+Run the container:
+
+```powershell
+docker run --rm -p 8000:8000 churnxgb-api
+```
+
+The API is exposed at `http://127.0.0.1:8000` with:
+- `GET /health`
+- `POST /predict`
+
+The container includes the source code, config, and saved model registry artifacts needed to start the API locally. It is meant as a minimal serving setup, not a full deployment platform.
+
 ## Key Outputs
 
 ### Training and evaluation
@@ -313,6 +404,7 @@ The dashboard reads saved artifacts and does not retrain models live.
 - The pipeline logs a SHA-256 hash of the processed feature table as `data_version`.
 - Training logs metrics and artifacts to MLflow.
 - The promoted model record points to the selected MLflow run id.
+- Each saved model also carries an `inference_contract.json` file that defines the required inference input columns and the clean prediction output schema.
 - `requirements.txt` captures the runtime dependencies used for the upgraded pipeline.
 
 I also added tests for temporal splitting, leakage-safe feature selection, feature schema, and metric sanity because I wanted a few targeted safeguards without turning this into a heavy software engineering project.
@@ -321,6 +413,8 @@ I also added tests for temporal splitting, leakage-safe feature selection, featu
 
 - Delayed-label performance tracking after future labels mature is not yet implemented.
 - Monitoring is intentionally lightweight: feature PSI plus score distribution summary stats.
+- The FastAPI service is intentionally minimal: no authentication, request logging, or deployment infrastructure is included yet.
+- The Docker setup is meant for local/containerized serving only and has not been extended into cloud infrastructure code.
 - The dashboard is designed for portfolio/demo use, not production serving.
 - Environment compatibility could still be tightened further, especially around package version consistency.
 

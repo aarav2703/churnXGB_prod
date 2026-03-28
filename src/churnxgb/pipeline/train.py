@@ -273,6 +273,7 @@ def main() -> None:
             )
             mlflow.sklearn.log_model(model, name="model")
             mlflow.log_artifact(meta["feature_cols_path"], artifact_path="schema")
+            mlflow.log_artifact(meta["inference_contract_path"], artifact_path="schema")
 
             val_policy = evaluate_policies(val_scored, budgets)
             test_policy = evaluate_policies(test_scored, budgets)

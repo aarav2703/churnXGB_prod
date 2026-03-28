@@ -1,15 +1,17 @@
 # ChurnXGB - Leakage-Aware Churn Targeting Under Budget Constraints
 
-I built this project to answer a version of churn modeling that feels much closer to how a retention team would actually use a model in practice.
+I built this project around a version of churn modeling that felt closer to a real retention workflow than the usual "predict churn probability" setup.
 
-Instead of asking only, "Can I predict who will churn?", I framed the problem as, "If a team can only contact 5% to 20% of customers, which customers should they prioritize to protect the most value at risk?"
+The question I used was:
 
-That framing shaped most of my design choices:
+If a team can only contact 5% to 20% of customers, who should they prioritize to protect the most value at risk?
+
+That decision framing shaped most of the project:
 - I built point-in-time customer-month snapshots so features only use information available at decision time.
 - I defined churn operationally as no purchase in the next 90 days after the cutoff timestamp.
 - I evaluated models not just with standard ML metrics, but also with Value-at-Risk@K and related top-K targeting metrics.
 - I compared a more complex model family against simpler baselines and heuristic policies instead of assuming the most complex model would win.
-- I added MLflow logging, drift outputs, a modular scoring layer, a small FastAPI service, and a lightweight Streamlit dashboard so the repo feels like an end-to-end applied ML project rather than only a modeling notebook.
+- I added MLflow logging, drift outputs, a modular scoring layer, a small FastAPI service, and a lightweight Streamlit dashboard so the repo covers more than just training a model once in a notebook.
 
 The repository now includes:
 - point-in-time feature generation and 90-day churn labeling
@@ -27,15 +29,15 @@ The repository now includes:
 
 ## System Overview
 
-At this point, the project works like a small end-to-end ML system rather than just a modeling script.
+At this point, the repo works like a small ML system rather than just a modeling script.
 
-In the offline pipeline, I start with raw transaction lines, clean them, aggregate them to customer events, build point-in-time customer-month snapshots, label 90-day churn, and train multiple models with temporal validation. Training logs metrics and artifacts to MLflow, saves a local model registry entry, and writes a lightweight promotion record for the selected model.
+The offline side starts from raw transactions, cleans them, aggregates them to customer events, builds point-in-time customer-month snapshots, labels 90-day churn, and trains multiple models with temporal validation. Training logs runs to MLflow, saves model artifacts locally, and writes a lightweight promotion record for the selected model.
 
-From there, the promoted model can be used in two ways. The scoring pipeline reads the saved feature table and writes scored outputs plus targeting lists and drift artifacts. The API uses the same scoring logic through a reusable scoring module, but applies it to request data that matches the saved inference contract. The Streamlit dashboard stays artifact-driven and reads the saved outputs for review and demo purposes.
+After that, the promoted model can be used in two ways. The scoring pipeline reads the saved feature table and writes scored outputs, target lists, and drift artifacts. The API uses the same scoring logic, but applies it to request data that matches the saved inference contract. The Streamlit dashboard stays artifact-driven and reads the saved outputs for review and demo purposes.
 
 ## Architecture / Data Flow
 
-I found it helpful to think about the repo in six stages:
+I think of the repo in six stages:
 
 1. `data/raw` -> `src/churnxgb/data` / `src/churnxgb/features`
    Raw transaction lines are cleaned and converted into invoice, event, and customer-month tables.
@@ -52,9 +54,9 @@ I found it helpful to think about the repo in six stages:
 
 ## Why I Framed The Problem This Way
 
-Most churn projects stop at probability ranking, but I wanted this project to reflect the real decision constraint a retention team faces: limited outreach capacity.
+Most churn projects stop at ranking by churn probability. I wanted this one to reflect the actual constraint a retention team faces: limited outreach capacity.
 
-If a team can only intervene on a small share of customers, then a model with a decent AUC is not automatically useful. What matters is whether the ranking captures customers who are both likely to churn and important enough to prioritize.
+If a team can only intervene on a small share of customers, a model with a decent AUC is not automatically useful. What matters is whether the ranking surfaces customers who are both likely to churn and worth prioritizing.
 
 That is why I used the policy:
 
@@ -62,7 +64,7 @@ That is why I used the policy:
 
 where `value_pos` is a pre-decision value proxy based on trailing 90-day revenue clipped at zero.
 
-I made that choice deliberately because I did not want to "cheat" by using future value information that would not be available at scoring time.
+I chose that on purpose because I did not want to use future value information that would not exist at scoring time.
 
 ## Problem Framing
 
@@ -72,7 +74,7 @@ Each row is a customer-month snapshot. Let `T` be the customer's last purchase t
 - Labels use events strictly after `T`
 - Churn is defined as no purchase in the next 90 days after `T`
 
-I used this setup because it mirrors how a churn model would actually be deployed and helps avoid obvious leakage from future behavior.
+I used this setup because it is much closer to how the model would be used in practice and because it helps avoid obvious leakage from future behavior.
 
 ## Dataset
 
@@ -82,7 +84,7 @@ I used this setup because it mirrors how a churn model would actually be deploye
 - Current event table: 44,571 customer events
 - Observed monthly span in processed data: `2009-12` through `2011-12`
 
-I started from raw transaction lines and converted them into a customer-month prediction problem because that gave me a realistic decision grain for retention targeting while still preserving temporal ordering.
+I converted the raw transactions into a customer-month prediction problem because that gave me a reasonable decision grain for retention targeting while still preserving temporal ordering.
 
 ## Feature Engineering
 
@@ -95,7 +97,7 @@ I computed features at the customer-month cutoff using only prior customer behav
 - average order value proxy: `aov_90d`
 - recency gap: `gap_days_prev`
 
-I focused on a compact, interpretable feature set rather than trying to build a very wide table with weakly justified variables. The goal was to show solid point-in-time feature engineering and keep the project understandable in an interview.
+I kept the feature set fairly compact and interpretable instead of building a very wide table with weakly justified variables. I wanted the project to show solid point-in-time feature engineering without becoming hard to explain.
 
 ## Models I Compared
 
@@ -111,11 +113,11 @@ I also kept non-ML policy baselines because I wanted the learned models to earn 
 - RFM-style targeting
 - random targeting baseline
 
-Including logistic regression was especially important to me because it gives a simpler benchmark and helps answer whether the tree models are actually adding value or just adding complexity.
+Including logistic regression was important to me because it gives a simple baseline and helps answer whether the tree models are actually adding value or just adding complexity.
 
 ## Evaluation
 
-I kept the original business-first framing and then expanded the evaluation suite so the project would read more strongly to both data science recruiters and applied ML reviewers.
+I kept the original business-first framing and then expanded the evaluation so the repo shows both decision-focused metrics and standard ML metrics.
 
 ### Business / targeting metrics
 
@@ -141,7 +143,7 @@ Generated in `reports/figures/`:
 - calibration curve
 - feature importance plot
 
-I added the broader metric suite because I wanted the project to show both business awareness and ML rigor. VaR@K is the metric I would emphasize in a retention setting, but PR-AUC, Brier score, and calibration still matter if I want to show that the underlying probabilities are sensible.
+VaR@K is still the main metric I would emphasize in a retention setting, but PR-AUC, Brier score, and calibration matter too if I want to show that the underlying probabilities are at least directionally sensible.
 
 ## Current Results
 
@@ -155,7 +157,7 @@ I added the broader metric suite because I wanted the project to show both busin
 
 Promoted model: `logistic_regression`
 
-One result I found interesting is that logistic regression won the current comparison. I like that outcome for this portfolio project because it shows I was willing to let the validation metric choose the best model instead of forcing the more complex model to be the headline result.
+One thing I like about the result is that logistic regression won the current comparison. I think that makes the project stronger because it shows I let the validation metric choose the model instead of forcing the more complex option to be the headline result.
 
 ### Promoted model test targeting metrics
 
@@ -169,7 +171,7 @@ At the 10% budget level, the promoted model captures `165,919.06` in value at ri
 
 ### Temporal backtesting
 
-I added rolling expanding-window backtesting to move beyond a single holdout split and check whether performance is reasonably stable across time.
+I added rolling expanding-window backtesting because I did not want the whole project to rest on one train/validation/test split.
 
 Backtesting was run across 9 chronological folds:
 
@@ -188,21 +190,21 @@ Backtest outputs are written to:
 - `reports/backtest_summary.csv`
 - `reports/backtest_summary.md`
 
-I added this because I wanted a stronger answer to the question, "Does this model still work when the time window shifts?" That felt like a more credible applied ML signal than relying only on one train/validation/test split.
+That gave me a better answer to the question, "Does this still work when the time window shifts?" which felt more credible than relying only on one holdout split.
 
 ## Interpretability And Monitoring
 
-I wanted the repo to show more than training and scoring, so I added:
+I also wanted the repo to show more than training and scoring, so I added:
 
 - feature importance artifacts in `reports/feature_importance.csv`
 - feature analysis writeup in `reports/feature_analysis.md`
 - drift monitoring outputs in `reports/monitoring/`
 
-For this version of the project, interpretability is lightweight by design. The goal was to make model behavior easier to inspect without turning the repo into a full interpretability platform.
+Interpretability is intentionally lightweight here. I mainly wanted a simple way to inspect model behavior without turning the project into a full interpretability platform.
 
 ## Dashboard
 
-I added a Streamlit dashboard in `dashboard/app.py` so the saved outputs can be explored without retraining the models.
+I added a Streamlit dashboard in `dashboard/app.py` so the saved outputs can be explored without retraining anything.
 
 The dashboard includes:
 - executive summary
@@ -212,11 +214,11 @@ The dashboard includes:
 - customer risk explorer
 - drift monitoring
 
-I made the dashboard artifact-driven on purpose. For a recruiter or reviewer, that is a much smoother demo flow than requiring a live retrain just to inspect results.
+I kept the dashboard artifact-driven on purpose. For a recruiter or reviewer, that is a much smoother demo than requiring a live retrain just to inspect results.
 
 ### Dashboard Preview
 
-The first dashboard view highlights the executive summary, model comparison table, and budget-based policy simulator. I like this screen as a project overview because it quickly communicates the promoted model, the top-line metrics, and how the targeting policy behaves at a chosen budget.
+The first dashboard view highlights the executive summary, model comparison table, and budget-based policy simulator. I like it as a quick overview because it communicates the promoted model, the top-line metrics, and how the targeting policy behaves at a chosen budget.
 
 ![Dashboard overview showing executive summary, model comparison, and policy simulator](reports/figures/dashboard_overview.png)
 
@@ -407,7 +409,7 @@ The container includes the source code, config, and saved model registry artifac
 - Each saved model also carries an `inference_contract.json` file that defines the required inference input columns and the clean prediction output schema.
 - `requirements.txt` captures the runtime dependencies used for the upgraded pipeline.
 
-I also added tests for temporal splitting, leakage-safe feature selection, feature schema, and metric sanity because I wanted a few targeted safeguards without turning this into a heavy software engineering project.
+I also added tests for temporal splitting, leakage-safe feature selection, feature schema, and metric sanity because I wanted a few targeted safeguards without turning the project into a heavy software engineering exercise.
 
 ## Known Limitations
 
@@ -428,4 +430,4 @@ If I continued this project, the next improvements I would prioritize are:
 - delayed-label evaluation of scored cohorts
 - slightly stronger dashboard storytelling and drift alert summaries
 
-I think those would add the most value for data science and applied ML recruiting without overcomplicating the repository.
+I think those would add the most value without making the repo much more complicated than it needs to be.

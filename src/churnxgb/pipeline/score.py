@@ -2,59 +2,49 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
+import os
+import shutil
+import uuid
 import yaml
 import pandas as pd
 
 import mlflow
 
 from churnxgb.modeling.model_utils import load_model_artifacts
-from churnxgb.modeling.mlflow_loader import (
-    load_promoted_sklearn_model_from_run_id,
-    predict_proba_1,
-)
 from churnxgb.inference.contracts import (
     build_prediction_output,
     load_inference_contract,
     validate_inference_frame,
 )
 from churnxgb.baselines.heuristics import add_heuristics
-from churnxgb.policy.scoring import add_policy_scores
+from churnxgb.evaluation.metrics import net_benefit_comparison_at_k
+from churnxgb.evaluation.report import evaluate_policies
+from churnxgb.monitoring.alerts import (
+    get_monitoring_alert_config,
+    summarize_drift_alerts,
+)
 from churnxgb.monitoring.drift import drift_report, top_psi_features
+from churnxgb.monitoring.history import build_drift_history_frame
+from churnxgb.paths import resolve_runtime_root
+from churnxgb.policy.scoring import (
+    add_policy_scores,
+    get_decision_policy_config,
+    get_targeting_policy_name,
+)
 from churnxgb.utils.hashing import sha256_file
+from churnxgb.utils.io import atomic_write_csv, atomic_write_json
 
 
 def _resolve_tracking_uri(repo_root: Path, tracking_uri: str) -> str:
     if tracking_uri.startswith("file:./") or tracking_uri == "file:mlruns":
-        abs_path = (repo_root / "mlruns").resolve()
+        abs_path = (repo_root / "mlruns_store").resolve()
         return "file:" + str(abs_path).replace("\\", "/")
     return tracking_uri
 
 
-def _write_targets(
-    df: pd.DataFrame, out_dir: Path, split_name: str, budgets: list[float]
-) -> dict[float, Path]:
-    out_paths: dict[float, Path] = {}
-    for k in budgets:
-        n = max(1, int(round(len(df) * float(k))))
-        top = df.sort_values("policy_ml", ascending=False).head(n).copy()
-        top = top[
-            [
-                "CustomerID",
-                "invoice_month",
-                "T",
-                "churn_prob",
-                "value_pos",
-                "policy_ml",
-            ]
-        ]
-        out_path = out_dir / f"targets_{split_name}_k{int(k * 100):02d}.parquet"
-        top.to_parquet(out_path, index=False)
-        out_paths[float(k)] = out_path
-    return out_paths
-
-
 def _resolve_promotion(repo_root: Path) -> dict | None:
-    promoted_path = repo_root / "models" / "promoted" / "production.json"
+    runtime_root = resolve_runtime_root(repo_root)
+    promoted_path = runtime_root / "models" / "promoted" / "production.json"
     if promoted_path.exists():
         with open(promoted_path, "r", encoding="utf-8") as f:
             return json.load(f)
@@ -65,28 +55,26 @@ def load_model(repo_root: Path, tracking_uri: str) -> dict:
     prom = _resolve_promotion(repo_root)
 
     model_name = prom.get("model_name", "churn_xgb_v1") if prom else "churn_xgb_v1"
-    local_model, feature_cols, _meta = load_model_artifacts(
-        repo_root, model_name=model_name
-    )
-    contract = load_inference_contract(
-        repo_root, model_name=model_name, feature_cols=feature_cols
-    )
-
     requested_run_id = prom.get("run_id") if prom else None
-    model = local_model
-    run_id = None
-    model_source = f"local_registry:{model_name}"
-    fallback_reason = None
-
-    if requested_run_id:
-        try:
-            model = load_promoted_sklearn_model_from_run_id(
-                repo_root, run_id=requested_run_id, tracking_uri=tracking_uri
+    run_id = requested_run_id
+    if prom:
+        registry_path = Path(prom["registry_path"])
+        if not registry_path.exists():
+            raise RuntimeError(
+                f"Promoted registry path does not exist: {registry_path}"
             )
-            run_id = requested_run_id
-            model_source = f"mlflow:runs:/{requested_run_id}/model"
-        except Exception as exc:
-            fallback_reason = str(exc)
+        model_name = prom["model_name"]
+        model, feature_cols, _meta = load_model_artifacts(repo_root, model_name=model_name)
+        contract = load_inference_contract(
+            repo_root, model_name=model_name, feature_cols=feature_cols
+        )
+        model_source = f"promoted_registry:{model_name}"
+    else:
+        model, feature_cols, _meta = load_model_artifacts(repo_root, model_name=model_name)
+        contract = load_inference_contract(
+            repo_root, model_name=model_name, feature_cols=feature_cols
+        )
+        model_source = f"local_registry:{model_name}"
 
     return {
         "model": model,
@@ -96,7 +84,7 @@ def load_model(repo_root: Path, tracking_uri: str) -> dict:
         "model_source": model_source,
         "run_id": run_id,
         "requested_run_id": requested_run_id,
-        "fallback_reason": fallback_reason,
+        "fallback_reason": None,
     }
 
 
@@ -107,24 +95,107 @@ def score_dataframe(
     contract: dict,
     budgets: list[float],
     model_source: str,
+    decision_cfg: dict[str, float] | None = None,
 ) -> pd.DataFrame:
     scored = add_heuristics(df.copy())
 
     X = scored[feature_cols]
     validate_inference_frame(X, contract["inference_input_columns"])
 
-    if model_source.startswith("mlflow:"):
-        scored["churn_prob"] = predict_proba_1(model, X)
-    else:
-        scored["churn_prob"] = model.predict_proba(X)[:, 1]
+    scored["churn_prob"] = model.predict_proba(X)[:, 1]
 
-    scored = add_policy_scores(scored)
+    scored = add_policy_scores(scored, decision_cfg=decision_cfg)
+    ranking_policy = get_targeting_policy_name(decision_cfg)
     for k in budgets:
         n = max(1, int(round(len(scored) * float(k))))
-        top_idx = scored.sort_values("policy_ml", ascending=False).head(n).index
+        top_idx = scored.sort_values(ranking_policy, ascending=False).head(n).index
         scored[f"target_k{int(k * 100):02d}"] = scored.index.isin(top_idx).astype(int)
 
     return scored
+
+
+def simulate_policy_by_budget(
+    scored_df: pd.DataFrame,
+    budgets: list[float],
+    baseline_policy: str = "policy_ml",
+    comparison_policy: str = "policy_net_benefit",
+) -> list[dict]:
+    """
+    Assumption-driven decision simulation using already-scored rows.
+
+    With constant intervention cost, the comparison policy can preserve the same
+    ranking order as the baseline policy. This function still quantifies the
+    simulated economics at each budget.
+    """
+    report_df = evaluate_policies(scored_df, budgets)
+    baseline_sorted = scored_df.sort_values(baseline_policy, ascending=False).reset_index()
+    comparison_sorted = scored_df.sort_values(comparison_policy, ascending=False).reset_index()
+    baseline_ranks = {
+        int(original_idx): int(rank)
+        for rank, original_idx in enumerate(baseline_sorted["index"].tolist())
+    }
+    comparison_ranks = {
+        int(original_idx): int(rank)
+        for rank, original_idx in enumerate(comparison_sorted["index"].tolist())
+    }
+    n_rank_changed = sum(
+        1
+        for idx in baseline_ranks
+        if baseline_ranks[idx] != comparison_ranks.get(idx)
+    )
+    pct_rank_changed = (n_rank_changed / len(baseline_ranks)) if baseline_ranks else 0.0
+
+    rows: list[dict] = []
+    for k in budgets:
+        comparison = net_benefit_comparison_at_k(
+            scored_df,
+            baseline_col=baseline_policy,
+            comparison_col=comparison_policy,
+            k=k,
+        )
+        baseline_row = report_df[
+            (report_df["policy"] == baseline_policy) & (report_df["budget_k"] == k)
+        ]
+        comparison_row = report_df[
+            (report_df["policy"] == comparison_policy) & (report_df["budget_k"] == k)
+        ]
+        top_n = max(1, int(round(len(scored_df) * float(k))))
+        baseline_top = scored_df.sort_values(baseline_policy, ascending=False).head(top_n)
+        comparison_top = scored_df.sort_values(comparison_policy, ascending=False).head(top_n)
+        baseline_ids = set(baseline_top["CustomerID"].astype(str)) if "CustomerID" in scored_df.columns else set()
+        comparison_ids = set(comparison_top["CustomerID"].astype(str)) if "CustomerID" in scored_df.columns else set()
+        only_baseline = sorted(baseline_ids - comparison_ids)
+        only_comparison = sorted(comparison_ids - baseline_ids)
+        overlap = len(baseline_ids & comparison_ids)
+        overlap_pct = (overlap / top_n) if top_n > 0 else 0.0
+        selected_customers_differ = bool(len(only_baseline) > 0 or len(only_comparison) > 0)
+        rows.append(
+            {
+                "budget_k": float(k),
+                "assumption_driven": True,
+                "baseline_policy": baseline_policy,
+                "comparison_policy": comparison_policy,
+                "ranking_changed": selected_customers_differ,
+                "n_customers_rank_changed": int(n_rank_changed),
+                "pct_customers_rank_changed": float(pct_rank_changed),
+                "value_at_risk_baseline": float(baseline_row["value_at_risk"].iloc[0])
+                if len(baseline_row) == 1
+                else None,
+                "value_at_risk_comparison": float(comparison_row["value_at_risk"].iloc[0])
+                if len(comparison_row) == 1
+                else None,
+                "baseline_net_benefit_at_k": comparison["baseline_net_benefit_at_k"],
+                "comparison_net_benefit_at_k": comparison["comparison_net_benefit_at_k"],
+                "comparison_minus_baseline": comparison["comparison_minus_baseline"],
+                "selected_customers_differ": selected_customers_differ,
+                "selection_overlap_at_k": float(overlap_pct),
+                "n_selected_only_baseline": int(len(only_baseline)),
+                "n_selected_only_comparison": int(len(only_comparison)),
+                "selected_only_baseline_customer_ids": only_baseline[:20],
+                "selected_only_comparison_customer_ids": only_comparison[:20],
+            }
+        )
+    return rows
 
 
 def build_outputs(
@@ -133,41 +204,117 @@ def build_outputs(
     feature_cols: list[str],
     budgets: list[float],
     split_name: str = "all",
+    monitoring_cfg: dict[str, float] | None = None,
+    decision_cfg: dict | None = None,
 ) -> dict:
-    ref_path = repo_root / "reports" / "monitoring" / "reference_profile.json"
-    mon_dir = repo_root / "reports" / "monitoring"
+    runtime_root = resolve_runtime_root(repo_root)
+    ref_path = runtime_root / "reports" / "monitoring" / "reference_profile.json"
+    mon_dir = runtime_root / "reports" / "monitoring"
     mon_dir.mkdir(parents=True, exist_ok=True)
 
     drift_out_path = mon_dir / "drift_latest.json"
+    drift_history_path = mon_dir / "drift_history.csv"
     drift_report_payload = None
     drift_top = None
     drift_summary = None
+    drift_alerts = None
+    generated_at_utc = pd.Timestamp.utcnow().isoformat()
+    alert_cfg = monitoring_cfg or get_monitoring_alert_config({})
+    ranking_policy = get_targeting_policy_name(
+        {"targeting_policy": "policy_net_benefit", **(decision_cfg or {})}
+        if decision_cfg is not None
+        else None
+    )
+    if "decision_targeting_policy" not in df.columns:
+        df = df.copy()
+        df["decision_targeting_policy"] = ranking_policy
 
     if ref_path.exists():
         drift_report_payload = drift_report(
             ref_path,
             df,
             feature_cols,
-            psi_threshold_warn=0.1,
-            psi_threshold_alert=0.25,
+            psi_threshold_warn=float(alert_cfg["warn_threshold"]),
+            psi_threshold_alert=float(alert_cfg["alert_threshold"]),
             include_score_col=None,
         )
-        with open(drift_out_path, "w", encoding="utf-8") as f:
-            json.dump(drift_report_payload, f, indent=2)
-
+        drift_alerts = summarize_drift_alerts(drift_report_payload)
+        drift_report_payload["generated_at_utc"] = generated_at_utc
+        drift_report_payload["alerts"] = drift_alerts
         drift_summary = drift_report_payload.get("summary")
         drift_top = top_psi_features(drift_report_payload, top_n=10)
+        drift_history_df = build_drift_history_frame(
+            drift_history_path,
+            drift_report_payload,
+            drift_alerts,
+            generated_at_utc,
+        )
+    else:
+        drift_history_df = None
 
-    pred_dir = repo_root / "outputs" / "predictions"
-    targ_dir = repo_root / "outputs" / "targets"
+    pred_dir = runtime_root / "outputs" / "predictions"
+    targ_dir = runtime_root / "outputs" / "targets"
     pred_dir.mkdir(parents=True, exist_ok=True)
     targ_dir.mkdir(parents=True, exist_ok=True)
 
     pred_path = pred_dir / f"predictions_{split_name}.parquet"
     inference_pred_path = pred_dir / f"predictions_inference.parquet"
-    df.to_parquet(pred_path, index=False)
-    build_prediction_output(df).to_parquet(inference_pred_path, index=False)
-    target_paths = _write_targets(df, targ_dir, split_name, budgets)
+    stage_dir = runtime_root / ".staging" / f"score_{uuid.uuid4().hex}"
+    stage_pred_dir = stage_dir / "predictions"
+    stage_targ_dir = stage_dir / "targets"
+    stage_mon_dir = stage_dir / "monitoring"
+    stage_pred_dir.mkdir(parents=True, exist_ok=True)
+    stage_targ_dir.mkdir(parents=True, exist_ok=True)
+    stage_mon_dir.mkdir(parents=True, exist_ok=True)
+
+    stage_pred_path = stage_pred_dir / pred_path.name
+    stage_inference_pred_path = stage_pred_dir / inference_pred_path.name
+    df.to_parquet(stage_pred_path, index=False)
+    build_prediction_output(df).to_parquet(stage_inference_pred_path, index=False)
+
+    staged_target_paths: dict[float, Path] = {}
+    for k in budgets:
+        stage_target_path = stage_targ_dir / f"targets_{split_name}_k{int(k * 100):02d}.parquet"
+        n = max(1, int(round(len(df) * float(k))))
+        top = df.sort_values(ranking_policy, ascending=False).head(n).copy()
+        top = top[
+            [
+                "CustomerID",
+                "invoice_month",
+                "T",
+                "churn_prob",
+                "value_pos",
+                "policy_ml",
+                "decision_targeting_policy",
+                "assumed_success_rate_customer",
+                "intervention_cost_customer",
+                "expected_retained_value",
+                "expected_cost",
+                "policy_net_benefit",
+            ]
+        ]
+        top.to_parquet(stage_target_path, index=False)
+        staged_target_paths[float(k)] = stage_target_path
+
+    stage_drift_path = stage_mon_dir / drift_out_path.name
+    stage_history_path = stage_mon_dir / drift_history_path.name
+    if drift_report_payload is not None:
+        atomic_write_json(stage_drift_path, drift_report_payload)
+        atomic_write_csv(drift_history_df, stage_history_path, index=False)
+
+    try:
+        os.replace(stage_pred_path, pred_path)
+        os.replace(stage_inference_pred_path, inference_pred_path)
+        target_paths: dict[float, Path] = {}
+        for k, staged in staged_target_paths.items():
+            final_path = targ_dir / staged.name
+            os.replace(staged, final_path)
+            target_paths[float(k)] = final_path
+        if drift_report_payload is not None:
+            os.replace(stage_drift_path, drift_out_path)
+            os.replace(stage_history_path, drift_history_path)
+    finally:
+        shutil.rmtree(stage_dir, ignore_errors=True)
 
     return {
         "pred_path": pred_path,
@@ -175,9 +322,11 @@ def build_outputs(
         "target_paths": target_paths,
         "ref_path": ref_path,
         "drift_out_path": drift_out_path,
+        "drift_history_path": drift_history_path,
         "drift_report": drift_report_payload,
         "drift_summary": drift_summary,
         "drift_top": drift_top,
+        "drift_alerts": drift_alerts,
     }
 
 
@@ -187,17 +336,20 @@ def main() -> None:
 
     with open(cfg_path, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
+    runtime_root = resolve_runtime_root(repo_root, cfg)
 
     budgets = [float(x) for x in cfg["eval"]["budgets"]]
+    decision_cfg = get_decision_policy_config(cfg)
+    monitoring_cfg = get_monitoring_alert_config(cfg)
 
     # Load features
-    feats_path = repo_root / "data" / "processed" / "customer_month_features.parquet"
+    feats_path = runtime_root / "data" / "processed" / "customer_month_features.parquet"
     df = pd.read_parquet(feats_path)
     data_version = sha256_file(feats_path)
 
     # MLflow setup (for logging drift artifacts)
     mlflow_cfg = cfg.get("mlflow", {})
-    tracking_uri = mlflow_cfg.get("tracking_uri", "sqlite:///mlflow.db")
+    tracking_uri = mlflow_cfg.get("tracking_uri", "file:./mlruns_store")
     tracking_uri = _resolve_tracking_uri(repo_root, tracking_uri)
     mlflow.set_tracking_uri(tracking_uri)
     mlflow.set_experiment(mlflow_cfg.get("experiment_name", "churnxgb"))
@@ -220,6 +372,7 @@ def main() -> None:
         contract=model_info["contract"],
         budgets=budgets,
         model_source=model_info["model_source"],
+        decision_cfg=decision_cfg,
     )
     output_info = build_outputs(
         repo_root,
@@ -227,6 +380,8 @@ def main() -> None:
         feature_cols=model_info["feature_cols"],
         budgets=budgets,
         split_name="all",
+        monitoring_cfg=monitoring_cfg,
+        decision_cfg=decision_cfg,
     )
 
     if output_info["drift_report"] is not None:
@@ -236,6 +391,8 @@ def main() -> None:
         print("top_psi_features:", output_info["drift_top"])
         print("score_reference_stats:", output_info["drift_report"].get("score_reference_stats"))
         print("score_current_stats:", output_info["drift_report"].get("score_current_stats"))
+        print("drift_alerts:", output_info["drift_alerts"])
+        print("drift_history:", output_info["drift_history_path"])
     else:
         print("\n=== DRIFT REPORT SKIPPED ===")
         print("reference_profile.json not found at:", output_info["ref_path"])

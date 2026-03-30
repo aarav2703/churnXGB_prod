@@ -31,6 +31,12 @@ def test_build_prediction_output_excludes_training_only_columns() -> None:
             "churn_prob": [0.42],
             "value_pos": [100.0],
             "policy_ml": [42.0],
+            "assumed_success_rate_customer": [0.2],
+            "intervention_cost_customer": [18.0],
+            "expected_retained_value": [6.3],
+            "expected_cost": [18.0],
+            "policy_net_benefit": [-8.7],
+            "decision_simulation_assumption_driven": [True],
             "churn_90d": [1],
             "customer_value_90d": [25.0],
         }

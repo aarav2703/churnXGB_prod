@@ -3,3 +3,41 @@ __pycache__/
 *.py[cod]
 *.pyo
 .ipynb_checkpoints/
+.env
+
+# Local runtime outputs
+.runtime/
+.tmp_runtime/
+
+# MLflow and local tracking stores
+mlruns/
+mlruns_store/
+mlflow.db
+
+# Frontend generated files
+frontend/node_modules/
+frontend/dist/
+
+# Local test artifacts and transient pytest dirs
+tests_artifacts/
+pytest-cache-files-*/
+
+# Generated data and model artifacts
+data/interim/
+data/processed/
+outputs/
+models/promoted/
+models/registry/*/model.joblib
+models/registry/*/metadata.json
+
+# Generated reports
+reports/evaluation/
+reports/figures/
+reports/monitoring/
+reports/backtest_detail.csv
+reports/backtest_summary.csv
+reports/model_comparison.csv
+reports/model_comparison.md
+reports/model_eval_summary.md
+reports/training_manifest.json
+reports/feature_importance.csv

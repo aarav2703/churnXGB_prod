@@ -5,6 +5,9 @@ import json
 
 import pandas as pd
 
+from churnxgb.paths import resolve_runtime_root
+from churnxgb.utils.io import atomic_write_json
+
 
 IDENTIFIER_COLUMNS = ["CustomerID", "invoice_month", "T"]
 TRAINING_ONLY_COLUMNS = [
@@ -19,6 +22,12 @@ PREDICTION_OUTPUT_COLUMNS = [
     "churn_prob",
     "value_pos",
     "policy_ml",
+    "assumed_success_rate_customer",
+    "intervention_cost_customer",
+    "expected_retained_value",
+    "expected_cost",
+    "policy_net_benefit",
+    "decision_simulation_assumption_driven",
 ]
 
 
@@ -34,12 +43,12 @@ def build_inference_contract(feature_cols: list[str]) -> dict:
 def write_inference_contract(
     repo_root: Path, model_name: str, feature_cols: list[str]
 ) -> Path:
-    out_path = repo_root / "models" / "registry" / model_name / "inference_contract.json"
+    runtime_root = resolve_runtime_root(repo_root)
+    out_path = runtime_root / "models" / "registry" / model_name / "inference_contract.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     contract = build_inference_contract(feature_cols)
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(contract, f, indent=2)
+    atomic_write_json(out_path, contract)
 
     return out_path
 
@@ -47,7 +56,8 @@ def write_inference_contract(
 def load_inference_contract(
     repo_root: Path, model_name: str, feature_cols: list[str] | None = None
 ) -> dict:
-    path = repo_root / "models" / "registry" / model_name / "inference_contract.json"
+    runtime_root = resolve_runtime_root(repo_root)
+    path = runtime_root / "models" / "registry" / model_name / "inference_contract.json"
     if not path.exists():
         if feature_cols is None:
             raise FileNotFoundError(f"Inference contract not found: {path}")

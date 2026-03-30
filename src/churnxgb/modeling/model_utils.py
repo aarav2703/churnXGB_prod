@@ -5,6 +5,8 @@ import json
 import joblib
 
 from churnxgb.inference.contracts import write_inference_contract
+from churnxgb.paths import resolve_runtime_root
+from churnxgb.utils.io import atomic_joblib_dump, atomic_write_json
 
 
 def save_model_artifacts(
@@ -18,7 +20,8 @@ def save_model_artifacts(
 
     Returns metadata dict including paths.
     """
-    out_dir = repo_root / "models" / "registry" / model_name
+    runtime_root = resolve_runtime_root(repo_root)
+    out_dir = runtime_root / "models" / "registry" / model_name
     out_dir.mkdir(parents=True, exist_ok=True)
 
     model_path = out_dir / "model.joblib"
@@ -26,10 +29,8 @@ def save_model_artifacts(
     meta_path = out_dir / "metadata.json"
     contract_path = write_inference_contract(repo_root, model_name, feature_cols)
 
-    joblib.dump(model, model_path)
-
-    with open(feats_path, "w", encoding="utf-8") as f:
-        json.dump(feature_cols, f, indent=2)
+    atomic_joblib_dump(model, model_path)
+    atomic_write_json(feats_path, feature_cols)
 
     meta = {
         "model_name": model_name,
@@ -37,8 +38,7 @@ def save_model_artifacts(
         "feature_cols_path": str(feats_path),
         "inference_contract_path": str(contract_path),
     }
-    with open(meta_path, "w", encoding="utf-8") as f:
-        json.dump(meta, f, indent=2)
+    atomic_write_json(meta_path, meta)
 
     return meta
 
@@ -51,7 +51,8 @@ def load_model_artifacts(
     """
     import json
 
-    base = repo_root / "models" / "registry" / model_name
+    runtime_root = resolve_runtime_root(repo_root)
+    base = runtime_root / "models" / "registry" / model_name
     model = joblib.load(base / "model.joblib")
 
     with open(base / "feature_cols.json", "r", encoding="utf-8") as f:

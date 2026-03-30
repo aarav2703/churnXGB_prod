@@ -3,6 +3,7 @@ from __future__ import annotations
 import pandas as pd
 
 from churnxgb.evaluation.classification import classification_summary
+from churnxgb.evaluation.metrics import net_benefit_at_k
 from churnxgb.evaluation.report import evaluate_policies
 
 
@@ -14,6 +15,7 @@ def test_policy_metrics_and_classification_metrics_sanity() -> None:
             "policy_ml": [0.9, 0.8, 0.2, 0.1],
             "policy_recency": [0.8, 0.7, 0.3, 0.2],
             "policy_rfm": [0.85, 0.4, 0.3, 0.1],
+            "policy_net_benefit": [20.0, 5.0, 3.0, -2.0],
             "churn_prob": [0.9, 0.7, 0.4, 0.2],
         }
     )
@@ -25,6 +27,8 @@ def test_policy_metrics_and_classification_metrics_sanity() -> None:
     assert ml_row["captured_churners"] == 1.0
     assert 0.0 <= ml_row["precision_at_k"] <= 1.0
     assert ml_row["lift_at_k"] >= 1.0
+    assert net_benefit_at_k(df, "policy_ml", 0.5, benefit_col="policy_net_benefit") == 25.0
+    assert "net_benefit_at_k" in ml_row.index
 
     cls = classification_summary(df["churn_90d"], df["churn_prob"])
     assert 0.0 <= cls["roc_auc"] <= 1.0

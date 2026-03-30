@@ -7,6 +7,15 @@ from __future__ import annotations
 import pandas as pd
 
 
+def _top_k_slice(df: pd.DataFrame, ranking_col: str, k: float) -> pd.DataFrame:
+    if not (0 < k <= 1):
+        raise ValueError("k must be in (0, 1].")
+
+    use = df.sort_values(ranking_col, ascending=False).copy()
+    top_n = max(1, int(round(len(use) * k)))
+    return use.iloc[:top_n]
+
+
 def value_at_risk_at_k(df: pd.DataFrame, policy_col: str, k: float) -> float:
     """
     Compute Value at Risk @ K under a given policy.
@@ -21,15 +30,7 @@ def value_at_risk_at_k(df: pd.DataFrame, policy_col: str, k: float) -> float:
     - value_pos
     - policy_col
     """
-    if not (0 < k <= 1):
-        raise ValueError("k must be in (0, 1].")
-
-    use = df.copy()
-    use = use.sort_values(policy_col, ascending=False)
-
-    n = len(use)
-    top_n = max(1, int(round(n * k)))
-    top = use.iloc[:top_n]
+    top = _top_k_slice(df, policy_col, k)
 
     var = float(top.loc[top["churn_90d"] == 1, "value_pos"].sum())
     return var
@@ -56,12 +57,9 @@ def top_k_classification_metrics(
     - recall_at_k
     - lift_at_k
     """
-    if not (0 < k <= 1):
-        raise ValueError("k must be in (0, 1].")
-
     use = df.sort_values(ranking_col, ascending=False).copy()
-    top_n = max(1, int(round(len(use) * k)))
-    top = use.iloc[:top_n]
+    top = _top_k_slice(use, ranking_col, k)
+    top_n = len(top)
 
     positives_total = int(use["churn_90d"].sum())
     captured = int(top["churn_90d"].sum())
@@ -76,4 +74,35 @@ def top_k_classification_metrics(
         "precision_at_k": precision,
         "recall_at_k": recall,
         "lift_at_k": lift,
+    }
+
+
+def net_benefit_at_k(
+    df: pd.DataFrame,
+    ranking_col: str,
+    k: float,
+    benefit_col: str = "policy_net_benefit",
+) -> float:
+    """
+    Sum assumption-driven per-row net benefit in the top-K targeted slice.
+    """
+    top = _top_k_slice(df, ranking_col, k)
+    if benefit_col not in top.columns:
+        raise ValueError(f"Expected {benefit_col} in dataframe.")
+    return float(top[benefit_col].sum())
+
+
+def net_benefit_comparison_at_k(
+    df: pd.DataFrame,
+    baseline_col: str,
+    comparison_col: str,
+    k: float,
+    benefit_col: str = "policy_net_benefit",
+) -> dict[str, float]:
+    baseline = net_benefit_at_k(df, baseline_col, k, benefit_col=benefit_col)
+    comparison = net_benefit_at_k(df, comparison_col, k, benefit_col=benefit_col)
+    return {
+        "baseline_net_benefit_at_k": baseline,
+        "comparison_net_benefit_at_k": comparison,
+        "comparison_minus_baseline": comparison - baseline,
     }

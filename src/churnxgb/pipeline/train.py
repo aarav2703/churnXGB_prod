@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
+import os
+import tempfile
 
 import mlflow
-import mlflow.sklearn
 import pandas as pd
 import yaml
 
@@ -27,13 +28,16 @@ from churnxgb.modeling.model_utils import save_model_artifacts
 from churnxgb.modeling.promote import write_promotion_record
 from churnxgb.modeling.train_models import train_and_predict
 from churnxgb.monitoring.drift import build_reference_profile_with_counts
+from churnxgb.paths import resolve_runtime_root
+from churnxgb.policy.scoring import add_policy_scores, get_decision_policy_config
 from churnxgb.split.temporal import temporal_split
 from churnxgb.utils.hashing import sha256_file
+from churnxgb.utils.io import atomic_write_csv, atomic_write_json, atomic_write_text
 
 
 def _resolve_tracking_uri(repo_root: Path, tracking_uri: str) -> str:
     if tracking_uri.startswith("file:./") or tracking_uri == "file:mlruns":
-        abs_path = (repo_root / "mlruns").resolve()
+        abs_path = (repo_root / "mlruns_store").resolve()
         return "file:" + str(abs_path).replace("\\", "/")
     return tracking_uri
 
@@ -105,19 +109,22 @@ def _feature_cols(train_df: pd.DataFrame) -> list[str]:
     ]
 
 
-def _policy_metric_row(rep: pd.DataFrame, budget: float) -> pd.Series:
-    row = rep[(rep["policy"] == "policy_ml") & (rep["budget_k"] == budget)]
+def _policy_metric_row(
+    rep: pd.DataFrame,
+    budget: float,
+    policy_name: str = "policy_ml",
+) -> pd.Series:
+    row = rep[(rep["policy"] == policy_name) & (rep["budget_k"] == budget)]
     if len(row) != 1:
-        raise ValueError(f"Expected a single ML policy row for budget={budget}.")
+        raise ValueError(
+            f"Expected a single policy row for policy={policy_name}, budget={budget}."
+        )
     return row.iloc[0]
 
 
 def _write_markdown_table(df: pd.DataFrame, out_path: Path, title: str) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(out_path, "w", encoding="utf-8") as f:
-        f.write(f"# {title}\n\n")
-        f.write(df.to_markdown(index=False))
-        f.write("\n")
+    atomic_write_text(out_path, f"# {title}\n\n{df.to_markdown(index=False)}\n")
 
 
 def _write_model_eval_summary(
@@ -131,34 +138,35 @@ def _write_model_eval_summary(
     pol = test_policy[(test_policy["model"] == best_model) & (test_policy["policy"] == "policy_ml")]
     pol = pol.sort_values("budget_k")
 
-    with open(out_path, "w", encoding="utf-8") as f:
-        f.write("# Model Evaluation Summary\n\n")
-        f.write(
-            f"Best promoted model: `{best_model}` selected by validation `value_at_risk` at {int(chosen_budget * 100)}% budget.\n\n"
-        )
-        f.write("## Test Classification Metrics\n\n")
-        f.write(
-            f"- ROC-AUC: {cls['roc_auc']:.4f}\n"
-            f"- PR-AUC: {cls['pr_auc']:.4f}\n"
-            f"- Brier score: {cls['brier_score']:.4f}\n"
-            f"- Positive rate: {cls['positive_rate']:.4f}\n\n"
-        )
-        f.write("## Test Targeting Metrics (policy_ml)\n\n")
-        f.write(pol[[
-            "budget_k",
-            "value_at_risk",
-            "var_covered_frac",
-            "precision_at_k",
-            "recall_at_k",
-            "lift_at_k",
-            "captured_churners",
-        ]].to_markdown(index=False))
-        f.write("\n\n")
-        f.write("## Figures\n\n")
-        f.write("- `reports/figures/test_roc_curve.png`\n")
-        f.write("- `reports/figures/test_pr_curve.png`\n")
-        f.write("- `reports/figures/test_lift_curve.png`\n")
-        f.write("- `reports/figures/test_calibration_curve.png`\n")
+    content = "# Model Evaluation Summary\n\n"
+    content += (
+        f"Best promoted model: `{best_model}` selected by validation deployed-policy economics at {int(chosen_budget * 100)}% budget.\n\n"
+    )
+    content += "## Test Classification Metrics\n\n"
+    content += (
+        f"- ROC-AUC: {cls['roc_auc']:.4f}\n"
+        f"- PR-AUC: {cls['pr_auc']:.4f}\n"
+        f"- Brier score: {cls['brier_score']:.4f}\n"
+        f"- Positive rate: {cls['positive_rate']:.4f}\n\n"
+    )
+    content += "## Test Targeting Metrics (policy_ml and policy_net_benefit)\n\n"
+    content += pol[[
+        "policy",
+        "budget_k",
+        "value_at_risk",
+        "net_benefit_at_k",
+        "var_covered_frac",
+        "precision_at_k",
+        "recall_at_k",
+        "lift_at_k",
+        "captured_churners",
+    ]].to_markdown(index=False)
+    content += "\n\n## Figures\n\n"
+    content += "- `reports/figures/test_roc_curve.png`\n"
+    content += "- `reports/figures/test_pr_curve.png`\n"
+    content += "- `reports/figures/test_lift_curve.png`\n"
+    content += "- `reports/figures/test_calibration_curve.png`\n"
+    atomic_write_text(out_path, content)
 
 
 def _write_feature_analysis(
@@ -167,47 +175,55 @@ def _write_feature_analysis(
     fi_df: pd.DataFrame,
     best_model: str,
 ) -> None:
-    with open(out_path, "w", encoding="utf-8") as f:
-        f.write("# Feature Analysis\n\n")
-        f.write(f"Primary model: `{best_model}`\n\n")
-        f.write(f"Importance method: {importance_label}\n\n")
-        f.write("Top features reflect the behavioral signals driving churn prioritization.\n\n")
-        f.write(fi_df.head(15).to_markdown(index=False))
-        f.write("\n")
+    content = "# Feature Analysis\n\n"
+    content += f"Primary model: `{best_model}`\n\n"
+    content += f"Importance method: {importance_label}\n\n"
+    content += "Top features reflect the behavioral signals driving churn prioritization.\n\n"
+    content += fi_df.head(15).to_markdown(index=False)
+    content += "\n"
+    atomic_write_text(out_path, content)
 
 
 def _write_backtest_summary(out_path: Path, backtest_summary: pd.DataFrame) -> None:
-    with open(out_path, "w", encoding="utf-8") as f:
-        f.write("# Backtest Summary\n\n")
-        f.write(
-            "Rolling expanding-window backtests reuse the canonical point-in-time feature table and retrain each model on multiple chronological windows.\n\n"
-        )
-        f.write(backtest_summary.to_markdown(index=False))
-        f.write("\n")
+    content = "# Backtest Summary\n\n"
+    content += (
+        "Rolling expanding-window backtests reuse the canonical point-in-time feature table and retrain each model on multiple chronological windows.\n\n"
+    )
+    content += backtest_summary.to_markdown(index=False)
+    content += "\n"
+    atomic_write_text(out_path, content)
 
 
 def main() -> None:
     repo_root = Path(__file__).resolve().parents[3]
     cfg_path = repo_root / "config" / "config.yaml"
+    tmp_root = repo_root / ".tmp_runtime"
+    tmp_root.mkdir(parents=True, exist_ok=True)
+    for key in ["TMPDIR", "TEMP", "TMP"]:
+        os.environ[key] = str(tmp_root)
+    tempfile.tempdir = str(tmp_root)
 
     with open(cfg_path, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
+    runtime_root = resolve_runtime_root(repo_root, cfg)
 
-    feats_path = repo_root / "data" / "processed" / "customer_month_features.parquet"
+    feats_path = runtime_root / "data" / "processed" / "customer_month_features.parquet"
     df = pd.read_parquet(feats_path)
     data_version = sha256_file(feats_path)
 
     mlflow_cfg = cfg.get("mlflow", {})
     tracking_uri = _resolve_tracking_uri(
-        repo_root, mlflow_cfg.get("tracking_uri", "sqlite:///mlflow.db")
+        repo_root, mlflow_cfg.get("tracking_uri", "file:./mlruns_store")
     )
     mlflow.set_tracking_uri(tracking_uri)
     mlflow.set_experiment(mlflow_cfg.get("experiment_name", "churnxgb"))
 
     budgets = [float(x) for x in cfg["eval"]["budgets"]]
     chosen_budget = 0.10 if 0.10 in budgets else budgets[0]
+    decision_cfg = get_decision_policy_config(cfg)
+    deployed_policy = decision_cfg.get("targeting_policy", "policy_net_benefit")
 
-    reports_dir = repo_root / "reports"
+    reports_dir = runtime_root / "reports"
     eval_dir = reports_dir / "evaluation"
     figures_dir = reports_dir / "figures"
     eval_dir.mkdir(parents=True, exist_ok=True)
@@ -261,17 +277,18 @@ def main() -> None:
             val_scored = add_heuristics(val_scored)
             test_scored = add_heuristics(test_scored)
 
-            from churnxgb.policy.scoring import add_policy_scores
-
-            train_scored = add_policy_scores(train_scored)
-            val_scored = add_policy_scores(val_scored)
-            test_scored = add_policy_scores(test_scored)
+            train_scored = add_policy_scores(train_scored, decision_cfg=decision_cfg)
+            val_scored = add_policy_scores(val_scored, decision_cfg=decision_cfg)
+            test_scored = add_policy_scores(test_scored, decision_cfg=decision_cfg)
 
             model_artifact_name = f"churn_{model_name}_v1"
             meta = save_model_artifacts(
                 repo_root, model, feature_cols, model_name=model_artifact_name
             )
-            mlflow.sklearn.log_model(model, name="model")
+            model_dir = Path(meta["model_path"]).parent
+            mlflow.log_artifact(str(model_dir / "model.joblib"), artifact_path="model_registry")
+            mlflow.log_artifact(str(model_dir / "feature_cols.json"), artifact_path="model_registry")
+            mlflow.log_artifact(str(model_dir / "metadata.json"), artifact_path="model_registry")
             mlflow.log_artifact(meta["feature_cols_path"], artifact_path="schema")
             mlflow.log_artifact(meta["inference_contract_path"], artifact_path="schema")
 
@@ -284,8 +301,8 @@ def main() -> None:
 
             val_policy_path = eval_dir / f"{model_name}_val_policy_results.csv"
             test_policy_path = eval_dir / f"{model_name}_test_policy_results.csv"
-            val_policy.to_csv(val_policy_path, index=False)
-            test_policy.to_csv(test_policy_path, index=False)
+            atomic_write_csv(val_policy, val_policy_path, index=False)
+            atomic_write_csv(test_policy, test_policy_path, index=False)
             mlflow.log_artifact(str(val_policy_path), artifact_path="reports")
             mlflow.log_artifact(str(test_policy_path), artifact_path="reports")
 
@@ -318,8 +335,8 @@ def main() -> None:
                         )
                 _log_uplift(rep, split_name, budgets)
 
-            val_row = _policy_metric_row(val_policy, chosen_budget)
-            test_row = _policy_metric_row(test_policy, chosen_budget)
+            val_row = _policy_metric_row(val_policy, chosen_budget, policy_name=deployed_policy)
+            test_row = _policy_metric_row(test_policy, chosen_budget, policy_name=deployed_policy)
             val_cls = next(
                 row for row in classification_rows if row["model"] == model_name and row["split"] == "val"
             )
@@ -332,8 +349,11 @@ def main() -> None:
                     "model": model_name,
                     "run_id": run.info.run_id,
                     "chosen_budget": chosen_budget,
+                    "selection_policy": deployed_policy,
                     "val_value_at_risk": float(val_row["value_at_risk"]),
                     "test_value_at_risk": float(test_row["value_at_risk"]),
+                    "val_net_benefit_at_k": float(val_row["net_benefit_at_k"]),
+                    "test_net_benefit_at_k": float(test_row["net_benefit_at_k"]),
                     "val_var_covered_frac": float(val_row["var_covered_frac"]),
                     "test_var_covered_frac": float(test_row["var_covered_frac"]),
                     "val_precision_at_k": float(val_row["precision_at_k"]),
@@ -362,19 +382,20 @@ def main() -> None:
             }
 
     comparison_df = pd.DataFrame(comparison_rows).sort_values(
-        ["val_value_at_risk", "test_roc_auc"], ascending=[False, False]
+        ["val_net_benefit_at_k", "val_value_at_risk", "test_roc_auc"],
+        ascending=[False, False, False],
     )
     classification_df = pd.DataFrame(classification_rows)
     policy_df = pd.DataFrame(policy_rows)
 
     comparison_path = reports_dir / "model_comparison.csv"
-    comparison_df.to_csv(comparison_path, index=False)
+    atomic_write_csv(comparison_df, comparison_path, index=False)
     _write_markdown_table(comparison_df, reports_dir / "model_comparison.md", "Model Comparison")
 
     classification_path = eval_dir / "classification_metrics.csv"
-    classification_df.to_csv(classification_path, index=False)
+    atomic_write_csv(classification_df, classification_path, index=False)
     policy_path = eval_dir / "policy_metrics_all_models.csv"
-    policy_df.to_csv(policy_path, index=False)
+    atomic_write_csv(policy_df, policy_path, index=False)
 
     best_model = str(comparison_df.iloc[0]["model"])
     best_meta = trained_artifacts[best_model]
@@ -433,24 +454,23 @@ def main() -> None:
     backtest_detail, backtest_summary = run_backtest(
         df, feature_cols, budgets, model_specs
     )
-    backtest_detail.to_csv(reports_dir / "backtest_detail.csv", index=False)
-    backtest_summary.to_csv(reports_dir / "backtest_summary.csv", index=False)
+    atomic_write_csv(backtest_detail, reports_dir / "backtest_detail.csv", index=False)
+    atomic_write_csv(backtest_summary, reports_dir / "backtest_summary.csv", index=False)
     _write_backtest_summary(reports_dir / "backtest_summary.md", backtest_summary)
 
-    with open(reports_dir / "training_manifest.json", "w", encoding="utf-8") as f:
-        json.dump(
-            {
-                "best_model": best_model,
-                "best_run_id": best_run_id,
-                "best_registry_name": best_registry_name,
-                "chosen_budget": chosen_budget,
-                "data_version": data_version,
-                "importance_plot": str(importance_plot_path),
-                "promotion_record": str(prom_path),
-            },
-            f,
-            indent=2,
-        )
+    atomic_write_json(
+        reports_dir / "training_manifest.json",
+        {
+            "best_model": best_model,
+            "best_run_id": best_run_id,
+            "best_registry_name": best_registry_name,
+            "chosen_budget": chosen_budget,
+            "selection_policy": deployed_policy,
+            "data_version": data_version,
+            "importance_plot": str(importance_plot_path),
+            "promotion_record": str(prom_path),
+        },
+    )
 
     print("\n=== TRAINING COMPLETE ===")
     print("best_model:", best_model)

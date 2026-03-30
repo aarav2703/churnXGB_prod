@@ -12,6 +12,8 @@ from churnxgb.labeling.churn_90d import label_churn_90d
 from churnxgb.features.rolling import build_rolling_features
 from churnxgb.features.recency import add_recency_features
 from churnxgb.features.value import add_customer_value_90d
+from churnxgb.paths import resolve_runtime_root
+from churnxgb.utils.io import atomic_write_parquet
 
 
 def main() -> None:
@@ -20,6 +22,7 @@ def main() -> None:
 
     with open(cfg_path, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
+    runtime_root = resolve_runtime_root(repo_root, cfg)
 
     raw_csv = repo_root / cfg["data"]["raw_csv"]
     horizon_days = int(cfg["label"]["horizon_days"])
@@ -72,21 +75,25 @@ def main() -> None:
             feature_table[c] = feature_table[c].fillna(0.0)
 
     # Write artifacts
-    interim_dir = repo_root / "data" / "interim"
-    processed_dir = repo_root / "data" / "processed"
+    interim_dir = runtime_root / "data" / "interim"
+    processed_dir = runtime_root / "data" / "processed"
     interim_dir.mkdir(parents=True, exist_ok=True)
     processed_dir.mkdir(parents=True, exist_ok=True)
 
-    df_clean.to_parquet(interim_dir / "transactions_clean.parquet", index=False)
-    invoice_df.to_parquet(interim_dir / "invoice_df.parquet", index=False)
-    event_df.to_parquet(interim_dir / "customer_events.parquet", index=False)
+    atomic_write_parquet(df_clean, interim_dir / "transactions_clean.parquet", index=False)
+    atomic_write_parquet(invoice_df, interim_dir / "invoice_df.parquet", index=False)
+    atomic_write_parquet(event_df, interim_dir / "customer_events.parquet", index=False)
 
-    customer_month.to_parquet(processed_dir / "customer_month.parquet", index=False)
-    customer_month_labeled.to_parquet(
-        processed_dir / "customer_month_labeled.parquet", index=False
+    atomic_write_parquet(customer_month, processed_dir / "customer_month.parquet", index=False)
+    atomic_write_parquet(
+        customer_month_labeled,
+        processed_dir / "customer_month_labeled.parquet",
+        index=False,
     )
-    feature_table.to_parquet(
-        processed_dir / "customer_month_features.parquet", index=False
+    atomic_write_parquet(
+        feature_table,
+        processed_dir / "customer_month_features.parquet",
+        index=False,
     )
 
     # Print sanity checks

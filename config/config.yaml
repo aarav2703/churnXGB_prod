@@ -1,6 +1,9 @@
 data:
   raw_csv: data/raw/online_retail_II.csv
 
+runtime:
+  root: .runtime
+
 label:
   horizon_days: 90
 
@@ -14,9 +17,40 @@ split:
 eval:
   budgets: [0.05, 0.10, 0.20]
 
+decision:
+  intervention_cost: 15.0
+  assumed_success_rate: 0.15
+  retention_value_multiplier: 1.0
+  targeting_policy: policy_net_benefit
+  heterogeneity:
+    enabled: true
+    success_rate_recency_weight: 0.45
+    success_rate_frequency_weight: 0.20
+    cost_value_weight: 0.35
+    cost_frequency_weight: 0.15
+    min_success_rate_multiplier: 0.70
+    max_success_rate_multiplier: 1.40
+    min_cost_multiplier: 0.85
+    max_cost_multiplier: 1.35
+
+experiment:
+  treatment_allocation_rate: 0.5
+  treatment_effect_multiplier: 1.0
+  targeting_policy: policy_net_benefit
+
+monitoring:
+  warn_threshold: 0.10
+  alert_threshold: 0.25
+
+llm:
+  provider: deepseek
+  model: deepseek-chat
+  api_base: "https://api.deepseek.com/v1"
+  timeout_seconds: 30
+
 
 mlflow:
-  tracking_uri: "sqlite:///mlflow.db"
+  tracking_uri: "file:./mlruns_store"
   experiment_name: "churnxgb"
   run_name_prefix: "churn_xgb"
 

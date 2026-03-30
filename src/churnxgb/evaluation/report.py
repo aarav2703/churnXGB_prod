@@ -3,6 +3,7 @@ from __future__ import annotations
 import pandas as pd
 
 from churnxgb.evaluation.metrics import (
+    net_benefit_at_k,
     top_k_classification_metrics,
     total_value_at_risk,
     value_at_risk_at_k,
@@ -15,13 +16,14 @@ def evaluate_policies(df: pd.DataFrame, budgets: list[float]) -> pd.DataFrame:
 
     Expected policy columns (if present):
       - policy_ml
+      - policy_net_benefit
       - policy_recency
       - policy_rfm
 
     Also evaluate a random baseline by shuffling rows deterministically.
     """
     policies = []
-    for col in ["policy_ml", "policy_recency", "policy_rfm"]:
+    for col in ["policy_ml", "policy_net_benefit", "policy_recency", "policy_rfm"]:
         if col in df.columns:
             policies.append(col)
 
@@ -38,8 +40,12 @@ def evaluate_policies(df: pd.DataFrame, budgets: list[float]) -> pd.DataFrame:
                     "policy": pol,
                     "budget_k": k,
                     "value_at_risk": var_k,
+                    "net_benefit_at_k": net_benefit_at_k(df, pol, k)
+                    if "policy_net_benefit" in df.columns
+                    else None,
                     "total_value_at_risk": total_var,
                     "var_covered_frac": (var_k / total_var) if total_var > 0 else 0.0,
+                    "assumption_driven": bool("policy_net_benefit" in df.columns),
                     **cls,
                 }
             )
@@ -57,8 +63,12 @@ def evaluate_policies(df: pd.DataFrame, budgets: list[float]) -> pd.DataFrame:
                 "policy": "policy_random",
                 "budget_k": k,
                 "value_at_risk": var_k,
+                "net_benefit_at_k": net_benefit_at_k(shuffled, "policy_random", k)
+                if "policy_net_benefit" in shuffled.columns
+                else None,
                 "total_value_at_risk": total_var,
                 "var_covered_frac": (var_k / total_var) if total_var > 0 else 0.0,
+                "assumption_driven": bool("policy_net_benefit" in shuffled.columns),
                 **cls,
             }
         )

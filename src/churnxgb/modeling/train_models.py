@@ -10,6 +10,8 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from xgboost import XGBClassifier
 
+from churnxgb.modeling.calibration import CalibratedModel, ProbabilityCalibrator
+
 
 def build_model(model_name: str, model_params: dict | None = None) -> Any:
     params = model_params or {}
@@ -75,15 +77,50 @@ def train_and_predict(
     y_train = train_df[label_col]
     X_val = val_df[feature_cols]
     X_test = test_df[feature_cols]
+    calibration_method = (model_params or {}).get("calibration_method", "platt")
 
-    model.fit(X_train, y_train)
+    train_use = train_df.copy()
+    calibration_df = train_use.copy()
+    if "invoice_month" in train_use.columns and train_use["invoice_month"].nunique() >= 3:
+        months = sorted(train_use["invoice_month"].astype("period[M]").unique())
+        calibration_months = months[max(1, int(len(months) * 0.8)) :]
+        if len(calibration_months) >= 1:
+            calibration_df = train_use[train_use["invoice_month"].isin(calibration_months)].copy()
+            train_use = train_use[~train_use["invoice_month"].isin(calibration_months)].copy()
+    if len(train_use) == 0 or len(calibration_df) == 0 or calibration_df[label_col].nunique() < 2:
+        split_idx = max(1, int(len(train_df) * 0.8))
+        train_use = train_df.iloc[:split_idx].copy()
+        calibration_df = train_df.iloc[split_idx:].copy()
+    if len(train_use) == 0 or len(calibration_df) == 0 or calibration_df[label_col].nunique() < 2:
+        train_use = train_df.copy()
+        calibration_df = train_df.copy()
+
+    model.fit(train_use[feature_cols], train_use[label_col])
+
+    raw_calibration_scores = model.predict_proba(calibration_df[feature_cols])[:, 1]
+    calibrator = ProbabilityCalibrator(method=calibration_method).fit(
+        raw_calibration_scores, calibration_df[label_col]
+    )
+    calibrated_model = CalibratedModel(
+        base_model=model,
+        calibrator=calibrator,
+        calibration_metadata={
+            "method": calibration_method,
+            "calibration_rows": int(len(calibration_df)),
+            "train_rows": int(len(train_use)),
+        },
+    )
 
     train_out = train_df.copy()
     val_out = val_df.copy()
     test_out = test_df.copy()
 
-    train_out["churn_prob"] = model.predict_proba(X_train)[:, 1]
-    val_out["churn_prob"] = model.predict_proba(X_val)[:, 1]
-    test_out["churn_prob"] = model.predict_proba(X_test)[:, 1]
+    train_out["churn_prob_raw"] = model.predict_proba(X_train)[:, 1]
+    val_out["churn_prob_raw"] = model.predict_proba(X_val)[:, 1]
+    test_out["churn_prob_raw"] = model.predict_proba(X_test)[:, 1]
 
-    return train_out, val_out, test_out, model
+    train_out["churn_prob"] = calibrated_model.predict_proba(X_train)[:, 1]
+    val_out["churn_prob"] = calibrated_model.predict_proba(X_val)[:, 1]
+    test_out["churn_prob"] = calibrated_model.predict_proba(X_test)[:, 1]
+
+    return train_out, val_out, test_out, calibrated_model

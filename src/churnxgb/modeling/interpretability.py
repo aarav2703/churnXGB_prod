@@ -9,7 +9,12 @@ import shap
 from sklearn.pipeline import Pipeline
 
 
+def _unwrap_model(model):
+    return getattr(model, "base_model", model)
+
+
 def _booster_feature_importance(model, feature_cols: list[str]) -> pd.DataFrame | None:
+    model = _unwrap_model(model)
     if hasattr(model, "get_booster"):
         booster = model.get_booster()
         score = booster.get_score(importance_type="gain")
@@ -42,9 +47,10 @@ def save_feature_importance_artifacts(
 
     # Keep SHAP runtime reasonable for portfolio use.
     X_small = X_sample[feature_cols].copy().head(1000)
+    explain_model = _unwrap_model(model)
 
     try:
-        explainer = shap.Explainer(model, X_small)
+        explainer = shap.Explainer(explain_model, X_small)
         shap_values = explainer(X_small)
         mean_abs = np.abs(shap_values.values).mean(axis=0)
         fi_df = (
@@ -67,23 +73,23 @@ def save_feature_importance_artifacts(
         plt.close()
         return fi_df, "SHAP mean absolute importance", shap_path
     except Exception:
-        fi_df = _booster_feature_importance(model, feature_cols)
+        fi_df = _booster_feature_importance(explain_model, feature_cols)
         if fi_df is None:
             # Fall back to generic feature_importances_ if exposed.
-            if hasattr(model, "feature_importances_"):
+            if hasattr(explain_model, "feature_importances_"):
                 fi_df = (
                     pd.DataFrame(
                         {
                             "feature": feature_cols,
-                            "importance": np.asarray(model.feature_importances_, dtype=float),
+                            "importance": np.asarray(explain_model.feature_importances_, dtype=float),
                             "source": "native_feature_importance",
                         }
                     )
                     .sort_values("importance", ascending=False)
                     .reset_index(drop=True)
                 )
-            elif hasattr(model, "named_steps") and "model" in model.named_steps:
-                inner = model.named_steps["model"]
+            elif hasattr(explain_model, "named_steps") and "model" in explain_model.named_steps:
+                inner = explain_model.named_steps["model"]
                 coefs = getattr(inner, "coef_", None)
                 if coefs is not None:
                     fi_df = (
@@ -120,6 +126,7 @@ def _sigmoid(x: np.ndarray) -> np.ndarray:
 
 
 def _is_logistic_pipeline(model) -> bool:
+    model = _unwrap_model(model)
     return (
         isinstance(model, Pipeline)
         and hasattr(model, "named_steps")
@@ -129,9 +136,15 @@ def _is_logistic_pipeline(model) -> bool:
     )
 
 
+def _is_tree_model(model) -> bool:
+    model = _unwrap_model(model)
+    return hasattr(model, "get_booster") or hasattr(model, "booster_")
+
+
 def _prepare_logistic_transformed_frame(
     model: Pipeline, X: pd.DataFrame, feature_cols: list[str]
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    model = _unwrap_model(model)
     X_input = X[feature_cols].copy()
     transformed = X_input.copy()
 
@@ -158,6 +171,7 @@ def _explain_logistic_pipeline_rows(
     feature_cols: list[str],
     top_n: int,
 ) -> list[dict]:
+    model = _unwrap_model(model)
     X_input, transformed = _prepare_logistic_transformed_frame(model, X, feature_cols)
     lr = model.named_steps["model"]
     coef = np.asarray(lr.coef_[0], dtype=float)
@@ -208,6 +222,7 @@ def _explain_with_shap(
     feature_cols: list[str],
     top_n: int,
 ) -> list[dict]:
+    model = _unwrap_model(model)
     X_input = X[feature_cols].copy()
     background = X_input.head(min(len(X_input), 200)).copy()
     explainer = shap.Explainer(model, background)
@@ -251,6 +266,62 @@ def _explain_with_shap(
     return rows
 
 
+def _explain_tree_model_rows(
+    model,
+    X: pd.DataFrame,
+    feature_cols: list[str],
+    top_n: int,
+) -> list[dict]:
+    model = _unwrap_model(model)
+    X_input = X[feature_cols].copy()
+    explainer = shap.TreeExplainer(model)
+    shap_values = explainer.shap_values(X_input)
+
+    if isinstance(shap_values, list):
+        values = np.asarray(shap_values[-1], dtype=float)
+    else:
+        values = np.asarray(shap_values, dtype=float)
+
+    base_values = explainer.expected_value
+    if isinstance(base_values, (list, tuple, np.ndarray)):
+        base_array = np.asarray(base_values, dtype=float)
+        if base_array.ndim == 0:
+            base_array = np.repeat(base_array.item(), len(X_input))
+        else:
+            base_array = np.repeat(base_array.ravel()[-1], len(X_input))
+    else:
+        base_array = np.repeat(float(base_values), len(X_input))
+
+    rows: list[dict] = []
+    for row_idx, idx in enumerate(X_input.index):
+        contrib_df = pd.DataFrame(
+            {
+                "feature": feature_cols,
+                "feature_value": X_input.iloc[row_idx].to_numpy(dtype=float),
+                "shap_value": values[row_idx].astype(float),
+            }
+        )
+        top_positive = contrib_df.sort_values("shap_value", ascending=False)
+        top_positive = top_positive[top_positive["shap_value"] > 0].head(top_n)
+        top_negative = contrib_df.sort_values("shap_value").head(top_n)
+        top_negative = top_negative[top_negative["shap_value"] < 0]
+
+        row_prob = float(model.predict_proba(X_input.iloc[[row_idx]])[:, 1][0])
+        rows.append(
+            {
+                "row_index": int(row_idx),
+                "input_index": int(idx) if isinstance(idx, (int, np.integer)) else str(idx),
+                "explanation_method": "tree_shap_row_explanation",
+                "base_value": float(base_array[row_idx]),
+                "prediction_probability": row_prob,
+                "feature_contributions": contrib_df.to_dict(orient="records"),
+                "top_positive_contributors": top_positive.to_dict(orient="records"),
+                "top_negative_contributors": top_negative.to_dict(orient="records"),
+            }
+        )
+    return rows
+
+
 def explain_prediction_rows(
     model,
     X: pd.DataFrame,
@@ -273,5 +344,7 @@ def explain_prediction_rows(
     X_input = X[feature_cols].copy()
     if _is_logistic_pipeline(model):
         return _explain_logistic_pipeline_rows(model, X_input, feature_cols, top_n)
+    if _is_tree_model(model):
+        return _explain_tree_model_rows(model, X_input, feature_cols, top_n)
 
     return _explain_with_shap(model, X_input, feature_cols, top_n)

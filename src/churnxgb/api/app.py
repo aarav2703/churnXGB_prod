@@ -56,6 +56,14 @@ class SimulateExperimentRequest(BaseModel):
     budgets: list[float] | None = None
 
 
+class LLMExplainCustomerRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    customer_id: str
+    invoice_month: str
+    top_n: int = 5
+
+
 def _repo_root_from_app_file() -> Path:
     return Path(__file__).resolve().parents[3]
 
@@ -260,6 +268,38 @@ def _load_latest_drift(repo_root: Path) -> dict[str, Any]:
     return _load_json_file(drift_path, "drift_latest.json not found.")
 
 
+def _load_decision_drift(repo_root: Path) -> pd.DataFrame:
+    runtime_root = resolve_runtime_root(repo_root)
+    path = runtime_root / "reports" / "decision_drift.csv"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="decision_drift.csv not found.")
+    return pd.read_csv(path)
+
+
+def _load_segment_evaluation(repo_root: Path) -> pd.DataFrame:
+    runtime_root = resolve_runtime_root(repo_root)
+    path = runtime_root / "reports" / "evaluation_segments.csv"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="evaluation_segments.csv not found.")
+    return pd.read_csv(path)
+
+
+def _load_backtest_detail(repo_root: Path) -> pd.DataFrame:
+    runtime_root = resolve_runtime_root(repo_root)
+    path = runtime_root / "reports" / "backtest_detail.csv"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="backtest_detail.csv not found.")
+    return pd.read_csv(path)
+
+
+def _load_budget_frontier(repo_root: Path, model_name: str) -> pd.DataFrame:
+    runtime_root = resolve_runtime_root(repo_root)
+    path = runtime_root / "reports" / "evaluation" / f"{model_name}_test_frontier.csv"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"Budget frontier not found for model={model_name}.")
+    return pd.read_csv(path)
+
+
 def _load_drift_history_records(repo_root: Path, limit: int) -> dict[str, Any]:
     runtime_root = resolve_runtime_root(repo_root)
     history_path = runtime_root / "reports" / "monitoring" / "drift_history.csv"
@@ -395,6 +435,50 @@ def create_app(repo_root: Path | None = None) -> FastAPI:
             **out,
         }
 
+    @app.get("/drift/decision")
+    def decision_drift(
+        budget_pct: int | None = None,
+    ) -> dict[str, Any]:
+        df = _load_decision_drift(app.state.repo_root)
+        if budget_pct is not None:
+            df = df[df["budget_k"] == float(budget_pct) / 100.0].copy()
+        return {"rows": _serialize_records(df.sort_values(["invoice_month", "budget_k"]))}
+
+    @app.get("/segments")
+    def segment_metrics(
+        split: str = "test",
+        segment_type: str | None = None,
+    ) -> dict[str, Any]:
+        df = _load_segment_evaluation(app.state.repo_root)
+        df = df[df["split"] == split].copy()
+        if segment_type is not None:
+            df = df[df["segment_type"] == segment_type].copy()
+        return {"rows": _serialize_records(df)}
+
+    @app.get("/backtest")
+    def backtest(
+        model_name: str | None = None,
+        budget_pct: int | None = None,
+    ) -> dict[str, Any]:
+        df = _load_backtest_detail(app.state.repo_root)
+        if model_name is not None:
+            df = df[df["model"] == model_name].copy()
+        if budget_pct is not None:
+            df = df[df["budget_k"] == float(budget_pct) / 100.0].copy()
+        return {"rows": _serialize_records(df.sort_values(["fold", "model"]))}
+
+    @app.get("/frontier")
+    def decision_frontier(
+        model_name: str | None = None,
+    ) -> dict[str, Any]:
+        summary = _load_model_summary(app.state.repo_root)
+        manifest = summary["manifest"]
+        use_model = model_name or manifest.get("best_model")
+        if use_model is None:
+            raise HTTPException(status_code=404, detail="No best model found in manifest.")
+        df = _load_budget_frontier(app.state.repo_root, str(use_model))
+        return {"model_name": use_model, "rows": _serialize_records(df)}
+
     @app.get("/predictions")
     def predictions(
         limit: int = Query(default=100, ge=1, le=1000),
@@ -527,6 +611,20 @@ def create_app(repo_root: Path | None = None) -> FastAPI:
                 use_budgets,
                 app.state.experiment_cfg,
             ),
+        }
+
+    @app.post("/llm/explain_customer")
+    def llm_explain_customer(request: LLMExplainCustomerRequest) -> dict[str, Any]:
+        agent = app.state.llm_agent
+        result = agent.explain_customer_decision(
+            customer_id=request.customer_id,
+            invoice_month=request.invoice_month,
+            top_n=request.top_n,
+        )
+        return {
+            "answer": result.answer,
+            "tools_used": result.tools_used,
+            "context": result.raw_data,
         }
 
     return app

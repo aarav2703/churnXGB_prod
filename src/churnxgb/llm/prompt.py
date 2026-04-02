@@ -16,6 +16,18 @@ You must follow these rules:
 - Do not describe hidden reasoning. Summarize only what the tools returned.
 """
 
+DECISION_EXPLAINER_PROMPT = """You are the ChurnXGB decision explainer.
+
+Rules:
+- Use only the provided customer context.
+- Explain the decision in plain business language.
+- Mention exact risk drivers from the supplied feature contributions.
+- Mention segment labels when they are available.
+- Recommend an action that matches the provided recommended_action field.
+- If policy_net_benefit is negative or missing, say that the outreach case is weak or requires review.
+- Do not invent interventions, uplift, confidence, or causes.
+"""
+
 
 def build_summary_messages(
     query: str,
@@ -34,6 +46,19 @@ def build_summary_messages(
             "content": (
                 "Answer the user query using only the tool outputs below.\n\n"
                 f"{json.dumps(user_payload, indent=2, default=str)}"
+            ),
+        },
+    ]
+
+
+def build_customer_explainer_messages(customer_context: dict[str, Any]) -> list[dict[str, str]]:
+    return [
+        {"role": "system", "content": DECISION_EXPLAINER_PROMPT},
+        {
+            "role": "user",
+            "content": (
+                "Generate a structured decision explanation for this customer context.\n\n"
+                f"{json.dumps(customer_context, indent=2, default=str)}"
             ),
         },
     ]

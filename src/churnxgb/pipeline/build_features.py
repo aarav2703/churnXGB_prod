@@ -6,6 +6,12 @@ import yaml
 from churnxgb.data.load import load_raw_csv
 from churnxgb.data.clean import clean_transactions
 from churnxgb.data.invoices import build_invoice_df
+from churnxgb.data.validation import (
+    require_columns,
+    validate_date_order,
+    validate_null_thresholds,
+    validate_unique_keys,
+)
 from churnxgb.features.events import build_customer_events
 from churnxgb.features.assemble import build_customer_month
 from churnxgb.labeling.churn_90d import label_churn_90d
@@ -29,14 +35,30 @@ def main() -> None:
 
     # Load raw -> clean -> invoices
     df_raw = load_raw_csv(raw_csv)
+    require_columns(
+        df_raw,
+        ["Invoice", "InvoiceDate", "Quantity", "Price", "Customer ID"],
+        "raw_transactions",
+    )
     df_clean = clean_transactions(df_raw)
+    validate_null_thresholds(
+        df_clean,
+        {"InvoiceDate": 0.0, "CustomerID": 0.0, "Quantity": 0.0, "Price": 0.0},
+        "transactions_clean",
+    )
+    validate_date_order(df_clean, "CustomerID", "InvoiceDate", "transactions_clean")
     invoice_df = build_invoice_df(df_clean)
+    validate_unique_keys(invoice_df, ["Invoice", "CustomerID"], "invoice_df")
+    validate_date_order(invoice_df, "CustomerID", "InvoiceDate", "invoice_df")
 
     # Event table
     event_df = build_customer_events(invoice_df)
+    validate_unique_keys(event_df, ["CustomerID", "InvoiceDate"], "event_df")
+    validate_date_order(event_df, "CustomerID", "InvoiceDate", "event_df")
 
     # Customer-month + label
     customer_month = build_customer_month(invoice_df)
+    validate_unique_keys(customer_month, ["CustomerID", "invoice_month"], "customer_month")
     customer_month_labeled = label_churn_90d(
         customer_month, event_df, horizon_days=horizon_days
     )
@@ -55,6 +77,12 @@ def main() -> None:
     feature_table = add_recency_features(feature_table, event_df)
     feature_table = add_customer_value_90d(
         feature_table, event_df, horizon_days=horizon_days
+    )
+    validate_unique_keys(feature_table, ["CustomerID", "invoice_month"], "feature_table")
+    validate_null_thresholds(
+        feature_table,
+        {"CustomerID": 0.0, "invoice_month": 0.0, "T": 0.0, "churn_90d": 0.0},
+        "feature_table",
     )
 
     # Basic fills (align with notebook expectations)

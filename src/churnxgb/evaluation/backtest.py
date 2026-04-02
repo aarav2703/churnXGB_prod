@@ -91,6 +91,9 @@ def run_backtest(
                         "test_end": fold.test_end,
                         "budget_k": float(row["budget_k"]),
                         "value_at_risk": float(row["value_at_risk"]),
+                        "net_benefit_at_k": float(row["net_benefit_at_k"])
+                        if row.get("net_benefit_at_k") is not None
+                        else None,
                         "var_covered_frac": float(row["var_covered_frac"]),
                         "precision_at_k": float(row["precision_at_k"]),
                         "recall_at_k": float(row["recall_at_k"]),
@@ -106,6 +109,7 @@ def run_backtest(
         detail_df.groupby(["model", "budget_k"], as_index=False)[
             [
                 "value_at_risk",
+                "net_benefit_at_k",
                 "var_covered_frac",
                 "precision_at_k",
                 "recall_at_k",

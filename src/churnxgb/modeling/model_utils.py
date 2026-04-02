@@ -25,16 +25,23 @@ def save_model_artifacts(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     model_path = out_dir / "model.joblib"
+    calibration_path = out_dir / "calibrator.joblib"
     feats_path = out_dir / "feature_cols.json"
     meta_path = out_dir / "metadata.json"
     contract_path = write_inference_contract(repo_root, model_name, feature_cols)
 
     atomic_joblib_dump(model, model_path)
+    calibration_obj = getattr(model, "calibrator", None)
+    if calibration_obj is not None:
+        atomic_joblib_dump(calibration_obj, calibration_path)
     atomic_write_json(feats_path, feature_cols)
 
     meta = {
         "model_name": model_name,
         "model_path": str(model_path),
+        "calibration_path": str(calibration_path) if calibration_obj is not None else None,
+        "calibration_method": getattr(calibration_obj, "method", None),
+        "calibration_metadata": getattr(model, "calibration_metadata", None),
         "feature_cols_path": str(feats_path),
         "inference_contract_path": str(contract_path),
     }

@@ -8,6 +8,7 @@ from typing import Any
 import pandas as pd
 
 from churnxgb.evaluation.experiment_simulation import simulate_experiment_by_budget
+from churnxgb.evaluation.report import add_segment_columns
 from churnxgb.inference.contracts import (
     IDENTIFIER_COLUMNS,
     PREDICTION_OUTPUT_COLUMNS,
@@ -20,6 +21,28 @@ from churnxgb.pipeline.score import score_dataframe, simulate_policy_by_budget
 
 
 TOOL_DEFINITIONS: list[dict[str, Any]] = [
+    {
+        "name": "get_project_overview",
+        "description": "Return a grounded overview of the current repository, runtime artifacts, promoted model, and run commands.",
+        "endpoint": "Local repo files",
+        "input_schema": {"type": "object", "properties": {}},
+        "output_schema": {"type": "object"},
+    },
+    {
+        "name": "get_customer_decision_context",
+        "description": "Fetch the saved scored customer row, segment labels, and row-level feature contributions for a grounded decision explanation.",
+        "endpoint": "GET /llm/explain_customer",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "customer_id": {"type": "string"},
+                "invoice_month": {"type": "string"},
+                "top_n": {"type": "integer", "minimum": 1, "maximum": 20},
+            },
+            "required": ["customer_id", "invoice_month"],
+        },
+        "output_schema": {"type": "object"},
+    },
     {
         "name": "get_targets",
         "description": "Fetch the current scored target list for a budget percentage from the saved offline outputs.",
@@ -155,7 +178,11 @@ class ChurnToolExecutor:
     def execute(self, name: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         params = params or {}
         try:
-            if name == "get_targets":
+            if name == "get_project_overview":
+                data = self.get_project_overview()
+            elif name == "get_customer_decision_context":
+                data = self.get_customer_decision_context(**params)
+            elif name == "get_targets":
                 data = self.get_targets(**params)
             elif name == "simulate_policy":
                 data = self.simulate_policy(**params)
@@ -180,13 +207,67 @@ class ChurnToolExecutor:
     def _runtime_root(self) -> Path:
         return resolve_runtime_root(self.context.repo_root)
 
+    def _load_json_if_exists(self, path: Path) -> dict[str, Any] | None:
+        if not path.exists():
+            return None
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+
     def _saved_predictions(self) -> pd.DataFrame:
         path = self._runtime_root() / "outputs" / "predictions" / "predictions_all.parquet"
         if not path.exists():
             raise ToolExecutionError(
                 "Saved scored predictions not found. Run the offline scoring pipeline first."
-            )
+        )
         return pd.read_parquet(path)
+
+    def get_project_overview(self) -> dict[str, Any]:
+        repo_root = self.context.repo_root
+        runtime_root = self._runtime_root()
+        readme_path = repo_root / "README.md"
+        config_path = repo_root / "config" / "config.yaml"
+        manifest_path = runtime_root / "reports" / "training_manifest.json"
+        promotion_path = runtime_root / "models" / "promoted" / "production.json"
+
+        readme_excerpt = None
+        if readme_path.exists():
+            text = readme_path.read_text(encoding="utf-8")
+            readme_excerpt = "\n".join(text.splitlines()[:40]).strip()
+
+        manifest = self._load_json_if_exists(manifest_path)
+        promotion = self._load_json_if_exists(promotion_path)
+
+        runtime_outputs = {
+            "features_built": (runtime_root / "data" / "processed").exists(),
+            "scored_predictions": (
+                runtime_root / "outputs" / "predictions" / "predictions_all.parquet"
+            ).exists(),
+            "target_lists": (runtime_root / "outputs" / "targets").exists(),
+            "decision_drift": (runtime_root / "reports" / "decision_drift.csv").exists(),
+            "segment_evaluation": (
+                runtime_root / "reports" / "evaluation_segments.csv"
+            ).exists(),
+            "backtest_detail": (runtime_root / "reports" / "backtest_detail.csv").exists(),
+        }
+
+        return {
+            "repo_name": repo_root.name,
+            "repo_shape": "offline pipeline + FastAPI + artifact-backed dashboards",
+            "entrypoints": {
+                "build_features": "python -m churnxgb.pipeline.build_features",
+                "train": "python -m churnxgb.pipeline.train",
+                "score": "python -m churnxgb.pipeline.score",
+                "api": "uvicorn churnxgb.api.app:app --host 0.0.0.0 --port 8000",
+                "streamlit": "streamlit run dashboard/app.py",
+                "frontend": "cd frontend && cmd /c npm.cmd run dev",
+            },
+            "frontend_layers": ["Streamlit", "React + Vite"],
+            "runtime_outputs": runtime_outputs,
+            "latest_manifest": manifest,
+            "current_promotion": promotion,
+            "config_exists": config_path.exists(),
+            "readme_excerpt": readme_excerpt,
+        }
 
     def get_targets(self, budget_pct: int, limit: int = 20) -> dict[str, Any]:
         path = self._runtime_root() / "outputs" / "targets" / f"targets_all_k{int(budget_pct):02d}.parquet"
@@ -199,6 +280,60 @@ class ChurnToolExecutor:
             "total_rows": int(len(df)),
             "returned_rows": int(min(len(df), limit)),
             "rows": _serialize_records(df.head(limit)),
+        }
+
+    def get_customer_decision_context(
+        self,
+        customer_id: str,
+        invoice_month: str,
+        top_n: int = 5,
+    ) -> dict[str, Any]:
+        model_info = self.context.model_info
+        saved = add_segment_columns(self._saved_predictions().copy())
+        if "invoice_month" in saved.columns:
+            saved["invoice_month"] = saved["invoice_month"].map(
+                lambda x: None if pd.isna(x) else str(x)
+            )
+        matched = saved[
+            (saved["CustomerID"].astype(str) == str(customer_id))
+            & (saved["invoice_month"] == str(invoice_month))
+        ].head(1)
+        if len(matched) == 0:
+            raise ToolExecutionError(
+                f"No saved scored row found for CustomerID={customer_id}, invoice_month={invoice_month}."
+            )
+
+        explanations = explain_prediction_rows(
+            model=model_info["model"],
+            X=matched[model_info["feature_cols"]],
+            feature_cols=model_info["feature_cols"],
+            top_n=top_n,
+        )
+        prediction = _serialize_prediction_output(matched)[0]
+        predicted = prediction.get("policy_net_benefit")
+        recommended_action = "review_before_contact"
+        if predicted is not None and float(predicted) > 0:
+            recommended_action = "prioritize_retention_outreach"
+        elif float(prediction.get("churn_prob") or 0.0) >= 0.5:
+            recommended_action = "high_risk_but_low_economic_return"
+
+        return {
+            "source_endpoint": "/llm/explain_customer",
+            "identifiers": {
+                key: prediction.get(key) for key in IDENTIFIER_COLUMNS
+            },
+            "prediction": {
+                key: prediction.get(key)
+                for key in PREDICTION_OUTPUT_COLUMNS
+                if key not in IDENTIFIER_COLUMNS
+            },
+            "segment_info": {
+                "value_band": matched.iloc[0].get("segment_value_band"),
+                "recency_bucket": matched.iloc[0].get("segment_recency_bucket"),
+                "frequency_bucket": matched.iloc[0].get("segment_frequency_bucket"),
+            },
+            "recommended_action": recommended_action,
+            **explanations[0],
         }
 
     def simulate_policy(self, budgets: list[float] | None = None) -> dict[str, Any]:

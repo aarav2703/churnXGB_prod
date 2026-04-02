@@ -1,9 +1,9 @@
 {
   "best_model": "logistic_regression",
-  "best_run_id": "b3fccc8ed96645b185b38ab1d024a970",
+  "best_run_id": "2d132a75feeb405d80ea67db32430df2",
   "best_registry_name": "churn_logistic_regression_v1",
   "chosen_budget": 0.1,
-  "data_version": "12896a6a78dcf6e11566d68c0cbcbb44f60b53535617bf02af4115e83110e2bc",
+  "data_version": "6aa90eb9e44cd00613eaa1ed09d112a894f886f05d4715c06bdacc87d7ee7e5f",
   "importance_plot": "C:\\Users\\aarav\\OneDrive\\Desktop\\job applications\\new projects\\ChurnXGB upgrade\\reports\\figures\\feature_importance.png",
   "promotion_record": "C:\\Users\\aarav\\OneDrive\\Desktop\\job applications\\new projects\\ChurnXGB upgrade\\models\\promoted\\production.json"
 }

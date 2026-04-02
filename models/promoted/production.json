@@ -1,5 +1,5 @@
 {
-  "run_id": "b3fccc8ed96645b185b38ab1d024a970",
+  "run_id": "2d132a75feeb405d80ea67db32430df2",
   "model_name": "churn_logistic_regression_v1",
   "registry_path": "C:\\Users\\aarav\\OneDrive\\Desktop\\job applications\\new projects\\ChurnXGB upgrade\\models\\registry\\churn_logistic_regression_v1",
   "selection_metric": "val_value_at_risk_at_10",

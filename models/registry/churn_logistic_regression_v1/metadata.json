@@ -1,5 +1,6 @@
 {
   "model_name": "churn_logistic_regression_v1",
   "model_path": "C:\\Users\\aarav\\OneDrive\\Desktop\\job applications\\new projects\\ChurnXGB upgrade\\models\\registry\\churn_logistic_regression_v1\\model.joblib",
-  "feature_cols_path": "C:\\Users\\aarav\\OneDrive\\Desktop\\job applications\\new projects\\ChurnXGB upgrade\\models\\registry\\churn_logistic_regression_v1\\feature_cols.json"
+  "feature_cols_path": "C:\\Users\\aarav\\OneDrive\\Desktop\\job applications\\new projects\\ChurnXGB upgrade\\models\\registry\\churn_logistic_regression_v1\\feature_cols.json",
+  "inference_contract_path": "C:\\Users\\aarav\\OneDrive\\Desktop\\job applications\\new projects\\ChurnXGB upgrade\\models\\registry\\churn_logistic_regression_v1\\inference_contract.json"
 }

@@ -112,6 +112,93 @@ def _write_summary_artifacts(repo_root: Path) -> None:
             }
         ]
     ).to_csv(eval_dir / "logistic_regression_test_policy_results.csv", index=False)
+    pd.DataFrame(
+        [
+            {
+                "policy": "policy_net_benefit",
+                "budget_k": 0.05,
+                "value_at_risk": 60.0,
+                "net_benefit_at_k": 8.0,
+                "precision_at_k": 0.4,
+                "recall_at_k": 0.2,
+                "lift_at_k": 1.2,
+                "targeted_count": 10,
+                "captured_churners": 4,
+                "var_covered_frac": 0.3,
+            },
+            {
+                "policy": "policy_net_benefit",
+                "budget_k": 0.1,
+                "value_at_risk": 120.0,
+                "net_benefit_at_k": 10.0,
+                "precision_at_k": 0.45,
+                "recall_at_k": 0.3,
+                "lift_at_k": 1.25,
+                "targeted_count": 20,
+                "captured_churners": 9,
+                "var_covered_frac": 0.5,
+            },
+        ]
+    ).to_csv(eval_dir / "logistic_regression_test_frontier.csv", index=False)
+    pd.DataFrame(
+        [
+            {
+                "model": "logistic_regression",
+                "split": "test",
+                "segment_type": "segment_value_band",
+                "segment_value": "high_value",
+                "n_rows": 10,
+                "positive_rate": 0.4,
+                "roc_auc": 0.7,
+                "pr_auc": 0.6,
+                "brier_score": 0.2,
+                "policy": "policy_net_benefit",
+                "budget_k": 0.1,
+                "value_at_risk": 120.0,
+                "var_covered_frac": 0.5,
+                "net_benefit_at_k": 10.0,
+                "targeted_count": 2,
+                "captured_churners": 1,
+                "precision_at_k": 0.5,
+                "recall_at_k": 0.25,
+                "lift_at_k": 1.2,
+            }
+        ]
+    ).to_csv(reports_dir / "evaluation_segments.csv", index=False)
+    pd.DataFrame(
+        [
+            {
+                "fold": "2010-01_2010-02",
+                "model": "logistic_regression",
+                "budget_k": 0.1,
+                "value_at_risk": 100.0,
+                "net_benefit_at_k": 12.0,
+                "var_covered_frac": 0.4,
+                "precision_at_k": 0.5,
+                "recall_at_k": 0.2,
+                "lift_at_k": 1.1,
+                "roc_auc": 0.7,
+                "pr_auc": 0.6,
+                "brier_score": 0.2,
+            }
+        ]
+    ).to_csv(reports_dir / "backtest_detail.csv", index=False)
+    pd.DataFrame(
+        [
+            {
+                "invoice_month": "2010-01",
+                "budget_k": 0.1,
+                "ranking_policy": "policy_net_benefit",
+                "n_rows": 100,
+                "selected_count": 10,
+                "selected_share": 0.1,
+                "avg_churn_prob_top_k": 0.8,
+                "avg_value_pos_top_k": 90.0,
+                "var_at_k": 120.0,
+                "avg_policy_net_benefit_top_k": 10.0,
+            }
+        ]
+    ).to_csv(reports_dir / "decision_drift.csv", index=False)
 
     pd.DataFrame(
         [
@@ -340,9 +427,33 @@ def test_api_artifact_endpoints_return_structured_json() -> None:
             assert predictions.status_code == 200
             assert predictions.json()["returned_rows"] == 1
 
+            segments = client.get("/segments")
+            assert segments.status_code == 200
+            assert len(segments.json()["rows"]) == 1
+
+            backtest = client.get("/backtest?model_name=logistic_regression&budget_pct=10")
+            assert backtest.status_code == 200
+            assert len(backtest.json()["rows"]) == 1
+
+            frontier = client.get("/frontier?model_name=logistic_regression")
+            assert frontier.status_code == 200
+            assert len(frontier.json()["rows"]) == 2
+
+            decision_drift = client.get("/drift/decision?budget_pct=10")
+            assert decision_drift.status_code == 200
+            assert len(decision_drift.json()["rows"]) == 1
+
             explain_saved = client.get("/customers/explain?customer_id=1&invoice_month=2010-01")
             assert explain_saved.status_code == 200
             assert explain_saved.json()["identifiers"]["CustomerID"] == 1
+
+            llm_explainer = client.post(
+                "/llm/explain_customer",
+                json={"customer_id": "1", "invoice_month": "2010-01", "top_n": 3},
+            )
+            assert llm_explainer.status_code == 200
+            assert "answer" in llm_explainer.json()
+            assert llm_explainer.json()["tools_used"][0]["name"] == "get_customer_decision_context"
     finally:
         shutil.rmtree(repo_root, ignore_errors=True)
 
@@ -501,6 +612,37 @@ def test_api_llm_query_routes_to_tool_and_returns_grounded_answer() -> None:
             assert body["tools_used"][0]["name"] == "get_targets"
             assert body["raw_data"][0]["ok"] is True
             assert body["raw_data"][0]["data"]["budget_pct"] == 10
+    finally:
+        shutil.rmtree(repo_root, ignore_errors=True)
+
+
+def test_api_llm_query_can_answer_project_overview_questions() -> None:
+    repo_root = _make_repo_root()
+    _write_config(repo_root)
+    _write_summary_artifacts(repo_root)
+    save_model_artifacts(
+        repo_root,
+        _trained_logistic_pipeline(),
+        _feature_cols(),
+        model_name="churn_xgb_v1",
+    )
+
+    try:
+        with TestClient(create_app(repo_root)) as client:
+            response = client.post(
+                "/llm/query",
+                json={
+                    "query": "How does this project work and how do I run it?",
+                    "include_raw_data": True,
+                },
+            )
+
+            assert response.status_code == 200
+            body = response.json()
+            assert "answer" in body
+            assert body["tools_used"][0]["name"] == "get_project_overview"
+            assert body["raw_data"][0]["ok"] is True
+            assert body["raw_data"][0]["data"]["entrypoints"]["train"] == "python -m churnxgb.pipeline.train"
     finally:
         shutil.rmtree(repo_root, ignore_errors=True)
 

@@ -1,245 +1,74 @@
 import { useEffect, useMemo, useState } from "react";
 import { apiGet, apiPost } from "./api.js";
+import MetricCard from "./components/MetricCard.jsx";
+import ChartCard from "./components/ChartCard.jsx";
+import DecisionPanel from "./components/DecisionPanel.jsx";
+import InteractiveLineChart from "./components/InteractiveLineChart.jsx";
+import SegmentGroupedChart from "./components/SegmentGroupedChart.jsx";
+import FeatureContributionChart from "./components/FeatureContributionChart.jsx";
+import DataTable from "./components/DataTable.jsx";
+import { EmptyState, ErrorState, LoadingGrid } from "./components/StatusState.jsx";
+import { formatCompact, formatNumber, formatPct } from "./utils/format.js";
+import { addLocalSegments } from "./utils/segments.js";
 
 const tabs = [
-  "Overview",
-  "Targeting Simulator",
-  "Customer Explanation",
+  "Executive Summary",
+  "Targeting Strategy",
+  "Model Performance",
+  "Segment Analysis",
   "Drift Monitoring",
-  "Experiment Simulation",
-  "Chat / Ask",
+  "Customer Explorer",
+  "Ask / Explain",
 ];
 
-function MetricCard({ label, value, note }) {
-  return (
-    <div className="metric-card">
-      <div className="metric-label">{label}</div>
-      <div className="metric-value">{value}</div>
-      {note ? <div className="metric-note">{note}</div> : null}
-    </div>
-  );
+function extractMessage(result) {
+  return result?.reason?.message || result?.reason || "Request failed";
 }
 
-function DataTable({ rows }) {
-  if (!rows || rows.length === 0) {
-    return <div className="empty-state">No rows available.</div>;
-  }
-  const columns = Object.keys(rows[0]);
-  return (
-    <div className="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            {columns.map((column) => (
-              <th key={column}>{column}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row, idx) => (
-            <tr key={idx}>
-              {columns.map((column) => (
-                <td key={column}>{renderCell(row[column])}</td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function formatNumber(value, digits = 1) {
-  if (value === null || value === undefined || Number.isNaN(Number(value))) {
-    return "n/a";
-  }
-  return Number(value).toLocaleString(undefined, {
-    minimumFractionDigits: digits,
-    maximumFractionDigits: digits,
-  });
-}
-
-function formatPct(value, digits = 1) {
-  if (value === null || value === undefined || Number.isNaN(Number(value))) {
-    return "n/a";
-  }
-  return `${(Number(value) * 100).toFixed(digits)}%`;
-}
-
-function formatCompact(value) {
-  if (value === null || value === undefined || Number.isNaN(Number(value))) {
-    return "n/a";
-  }
-  return Number(value).toLocaleString(undefined, {
-    notation: "compact",
-    maximumFractionDigits: 1,
-  });
-}
-
-function SegmentedBar({ segments }) {
-  const total = segments.reduce((sum, segment) => sum + Math.max(segment.value, 0), 0);
-  if (total <= 0) {
-    return <div className="empty-state">No visual breakdown available.</div>;
-  }
-  return (
-    <div className="segmented-bar">
-      {segments.map((segment) => (
-        <div
-          key={segment.label}
-          className="segmented-bar-piece"
-          style={{
-            width: `${(Math.max(segment.value, 0) / total) * 100}%`,
-            background: segment.color,
-          }}
-          title={`${segment.label}: ${segment.value}`}
-        />
-      ))}
-    </div>
-  );
-}
-
-function ContributionBars({ title, rows, tone }) {
-  if (!rows || rows.length === 0) {
-    return (
-      <div className="panel">
-        <h2>{title}</h2>
-        <div className="empty-state">No contributor rows available.</div>
-      </div>
-    );
-  }
-
-  const maxAbs = Math.max(
-    ...rows.map((row) => Math.abs(Number(row.contribution_logit ?? 0))),
-    1e-6,
-  );
-
-  return (
-    <div className="panel">
-      <h2>{title}</h2>
-      <div className="contribution-list">
-        {rows.map((row) => {
-          const width = (Math.abs(Number(row.contribution_logit ?? 0)) / maxAbs) * 100;
-          return (
-            <div key={`${title}-${row.feature}`} className="contribution-row">
-              <div className="contribution-meta">
-                <div className="contribution-feature">{row.feature}</div>
-                <div className="contribution-value">
-                  contribution {formatNumber(row.contribution_logit, 3)} | value{" "}
-                  {formatNumber(row.feature_value, 2)}
-                </div>
-              </div>
-              <div className="contribution-track">
-                <div
-                  className={`contribution-fill ${tone}`}
-                  style={{ width: `${width}%` }}
-                />
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function TrendBars({ rows, valueKey, labelKey }) {
-  if (!rows || rows.length === 0) {
-    return <div className="empty-state">No trend history available.</div>;
-  }
-  const values = rows.map((row) => Number(row[valueKey] ?? 0));
-  const maxValue = Math.max(...values, 1e-6);
-  return (
-    <div className="trend-bars">
-      {rows.map((row, idx) => {
-        const value = Number(row[valueKey] ?? 0);
-        return (
-          <div key={`${row[labelKey] ?? idx}`} className="trend-bar-col">
-            <div className="trend-bar-wrap">
-              <div
-                className="trend-bar-fill"
-                style={{ height: `${(value / maxValue) * 100}%` }}
-              />
-            </div>
-            <div className="trend-bar-label">{String(row[labelKey] ?? idx).slice(5, 10)}</div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-function HorizontalMetricChart({ title, rows, labelKey, valueKey, formatter = formatNumber }) {
-  if (!rows || rows.length === 0) {
-    return (
-      <div className="panel">
-        <h2>{title}</h2>
-        <div className="empty-state">No chart data available.</div>
-      </div>
-    );
-  }
-
-  const maxValue = Math.max(...rows.map((row) => Number(row[valueKey] ?? 0)), 1e-6);
-  return (
-    <div className="panel">
-      <h2>{title}</h2>
-      <div className="bar-chart-list">
-        {rows.map((row) => {
-          const value = Number(row[valueKey] ?? 0);
-          const width = (value / maxValue) * 100;
-          return (
-            <div key={`${title}-${row[labelKey]}`} className="bar-chart-row">
-              <div className="bar-chart-header">
-                <span>{row[labelKey]}</span>
-                <span>{formatter(value)}</span>
-              </div>
-              <div className="bar-chart-track">
-                <div className="bar-chart-fill" style={{ width: `${width}%` }} />
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function renderCell(value) {
-  if (value === null || value === undefined) return "";
-  if (typeof value === "number") return Number(value).toFixed(3);
-  if (Array.isArray(value)) return value.join(", ");
-  if (typeof value === "object") return JSON.stringify(value);
-  return String(value);
+function recommendationText(frontierPoint, simulationRow) {
+  const netBenefit = Number(frontierPoint?.net_benefit_at_k ?? simulationRow?.comparison_net_benefit_at_k ?? 0);
+  const delta = Number(simulationRow?.comparison_minus_baseline ?? 0);
+  if (netBenefit <= 0) return "Targeting at this budget is weak economically. Review campaign cost assumptions first.";
+  if (delta > 0) return "The cost-aware policy is adding value over the baseline at this budget.";
+  return "The selected budget is viable, but the baseline ranking remains competitive.";
 }
 
 export default function App() {
   const [baseUrl, setBaseUrl] = useState("http://127.0.0.1:8000");
-  const [activeTab, setActiveTab] = useState("Overview");
+  const [activeTab, setActiveTab] = useState("Executive Summary");
+  const [budgetPct, setBudgetPct] = useState(10);
+  const [selectedBudgetX, setSelectedBudgetX] = useState(0.1);
+  const [segmentType, setSegmentType] = useState("segment_value_band");
+  const [selectedSegment, setSelectedSegment] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [refreshToken, setRefreshToken] = useState(0);
+
   const [health, setHealth] = useState(null);
-  const [modelSummary, setModelSummary] = useState(null);
-  const [policyMetrics, setPolicyMetrics] = useState(null);
-  const [modelComparison, setModelComparison] = useState(null);
-  const [featureImportance, setFeatureImportance] = useState(null);
+  const [summary, setSummary] = useState(null);
+  const [comparison, setComparison] = useState([]);
+  const [policyMetrics, setPolicyMetrics] = useState([]);
+  const [frontier, setFrontier] = useState([]);
+  const [segments, setSegments] = useState([]);
+  const [backtest, setBacktest] = useState([]);
   const [drift, setDrift] = useState(null);
-  const [driftHistory, setDriftHistory] = useState(null);
-  const [targetsBudget, setTargetsBudget] = useState(10);
-  const [targets, setTargets] = useState(null);
-  const [policySimulation, setPolicySimulation] = useState(null);
-  const [experimentSimulation, setExperimentSimulation] = useState(null);
-  const [predictions, setPredictions] = useState(null);
+  const [decisionDrift, setDecisionDrift] = useState([]);
+  const [driftHistory, setDriftHistory] = useState([]);
+  const [targets, setTargets] = useState([]);
+  const [targetSummary, setTargetSummary] = useState({ totalRows: null, returnedRows: 0 });
+  const [predictions, setPredictions] = useState([]);
   const [selectedPrediction, setSelectedPrediction] = useState("");
   const [customerExplanation, setCustomerExplanation] = useState(null);
-  const [chatQuery, setChatQuery] = useState("Who should I target at 10% budget?");
+  const [llmDecision, setLlmDecision] = useState(null);
+  const [customerError, setCustomerError] = useState("");
+  const [policySimulation, setPolicySimulation] = useState(null);
+  const [chatQuery, setChatQuery] = useState("What should we do at 10% budget?");
   const [chatResult, setChatResult] = useState(null);
-  const [customerLoadError, setCustomerLoadError] = useState("");
 
   const normalizedBaseUrl = useMemo(() => baseUrl.replace(/\/$/, ""), [baseUrl]);
-  const policyResult = policySimulation?.results?.[0] ?? null;
-  const experimentResult = experimentSimulation?.results?.[0] ?? null;
-  const comparisonRow = modelSummary?.comparison_row ?? null;
-  const driftHistoryRows = driftHistory?.rows ?? [];
-  const explanationMethod = customerExplanation?.explanation_method ?? null;
+  const selectedBudgetFraction = Number(selectedBudgetX ?? budgetPct / 100);
+  const summaryRow = summary?.comparison_row ?? null;
+  const policySimulationRow = policySimulation?.results?.[0] ?? null;
 
   async function runLoad(task) {
     setLoading(true);
@@ -253,123 +82,219 @@ export default function App() {
     }
   }
 
+  const retryLoad = () => setRefreshToken((value) => value + 1);
+
+  useEffect(() => {
+    setError("");
+  }, [activeTab]);
+
   useEffect(() => {
     runLoad(async () => {
-      const [healthRes, summaryRes] = await Promise.all([
+      const results = await Promise.allSettled([
         apiGet(normalizedBaseUrl, "/health"),
         apiGet(normalizedBaseUrl, "/model-summary"),
-      ]);
-      setHealth(healthRes);
-      setModelSummary(summaryRes);
-    });
-  }, [normalizedBaseUrl]);
-
-  useEffect(() => {
-    if (activeTab !== "Overview") return;
-    runLoad(async () => {
-      const [policy, comparison, importance] = await Promise.all([
-        apiGet(normalizedBaseUrl, "/policy-metrics"),
         apiGet(normalizedBaseUrl, "/model-comparison"),
-        apiGet(normalizedBaseUrl, "/feature-importance?limit=8"),
+        apiGet(normalizedBaseUrl, "/frontier"),
+        apiGet(normalizedBaseUrl, "/policy-metrics"),
       ]);
-      setPolicyMetrics(policy);
-      setModelComparison(comparison);
-      setFeatureImportance(importance);
-    });
-  }, [activeTab, normalizedBaseUrl]);
+      const [healthRes, summaryRes, comparisonRes, frontierRes, policyRes] = results;
 
-  useEffect(() => {
-    if (activeTab !== "Targeting Simulator") return;
-    runLoad(async () => {
-      const [targetRows, simulation] = await Promise.all([
-        apiGet(normalizedBaseUrl, `/targets/${targetsBudget}?limit=50`),
-        apiPost(normalizedBaseUrl, "/simulate-policy", {
-          budgets: [targetsBudget / 100],
-        }),
-      ]);
-      setTargets(targetRows);
-      setPolicySimulation(simulation);
-    });
-  }, [activeTab, normalizedBaseUrl, targetsBudget]);
+      if (healthRes.status === "fulfilled") setHealth(healthRes.value);
+      if (summaryRes.status === "fulfilled") setSummary(summaryRes.value);
+      if (comparisonRes.status === "fulfilled") setComparison(comparisonRes.value.rows ?? []);
+      if (frontierRes.status === "fulfilled") setFrontier(frontierRes.value.rows ?? []);
+      if (policyRes.status === "fulfilled") setPolicyMetrics(policyRes.value.rows ?? []);
 
-  useEffect(() => {
-    if (activeTab !== "Customer Explanation") return;
-    runLoad(async () => {
-      setCustomerLoadError("");
-      setCustomerExplanation(null);
-      try {
-        const predictionRes = await apiGet(
-          normalizedBaseUrl,
-          "/predictions?limit=100&sort_by=policy_net_benefit",
-        );
-        setPredictions(predictionRes);
-        const first = predictionRes.rows?.[0];
-        if (first) {
-          const key = `${first.CustomerID}||${first.invoice_month}`;
-          setSelectedPrediction(key);
-        } else {
-          setSelectedPrediction("");
-          setCustomerLoadError(
-            "No scored customer rows were returned. Run the offline pipeline first so the explanation page has saved predictions to inspect.",
-          );
-        }
-      } catch (err) {
-        setPredictions(null);
-        setSelectedPrediction("");
-        setCustomerLoadError(
-          err.message ||
-            "The frontend could not load saved predictions. Make sure the API is running and the offline pipeline has been scored.",
-        );
+      const nSuccess = results.filter((result) => result.status === "fulfilled").length;
+      if (nSuccess === 0) {
+        throw new Error(extractMessage(results.find((result) => result.status === "rejected")));
       }
     });
-  }, [activeTab, normalizedBaseUrl]);
+  }, [normalizedBaseUrl, refreshToken]);
 
   useEffect(() => {
-    if (activeTab !== "Customer Explanation") return;
-    if (!selectedPrediction) return;
-    const [customerId, invoiceMonth] = selectedPrediction.split("||");
     runLoad(async () => {
-      try {
-        const explanation = await apiGet(
-          normalizedBaseUrl,
-          `/customers/explain?customer_id=${encodeURIComponent(customerId)}&invoice_month=${encodeURIComponent(invoiceMonth)}&top_n=5`,
-        );
-        setCustomerExplanation(explanation);
-      } catch (err) {
-        setCustomerExplanation(null);
-        setCustomerLoadError(
-          err.message ||
-            "The explanation request failed. Check that the API is running and the selected customer exists in saved predictions.",
-        );
+      const results = await Promise.allSettled([
+        apiGet(normalizedBaseUrl, `/drift/decision?budget_pct=${budgetPct}`),
+        apiPost(normalizedBaseUrl, "/simulate-policy", { budgets: [budgetPct / 100] }),
+      ]);
+      const [decisionRes, policyRes] = results;
+      if (decisionRes.status === "fulfilled") setDecisionDrift(decisionRes.value.rows ?? []);
+      if (policyRes.status === "fulfilled") setPolicySimulation(policyRes.value);
+      if (results.every((result) => result.status === "rejected")) {
+        throw new Error(extractMessage(results[0]));
       }
     });
-  }, [activeTab, normalizedBaseUrl, selectedPrediction]);
+  }, [normalizedBaseUrl, budgetPct, refreshToken]);
+
+  useEffect(() => {
+    if (!["Model Performance", "Segment Analysis"].includes(activeTab)) return;
+    runLoad(async () => {
+      const [segmentsRes, backtestRes] = await Promise.all([
+        apiGet(normalizedBaseUrl, `/segments?segment_type=${encodeURIComponent(segmentType)}`),
+        apiGet(normalizedBaseUrl, `/backtest?budget_pct=${budgetPct}`),
+      ]);
+      const rows = segmentsRes.rows ?? [];
+      setSegments(rows);
+      if (!selectedSegment && rows.length) setSelectedSegment(rows[0].segment_value);
+      setBacktest(backtestRes.rows ?? []);
+    });
+  }, [activeTab, normalizedBaseUrl, segmentType, budgetPct, refreshToken]);
 
   useEffect(() => {
     if (activeTab !== "Drift Monitoring") return;
     runLoad(async () => {
-      const [driftRes, driftHistoryRes] = await Promise.all([
+      const results = await Promise.allSettled([
         apiGet(normalizedBaseUrl, "/drift/latest"),
-        apiGet(normalizedBaseUrl, "/drift/history?limit=50"),
+        apiGet(normalizedBaseUrl, "/drift/history?limit=24"),
+        apiGet(normalizedBaseUrl, `/drift/decision?budget_pct=${budgetPct}`),
       ]);
-      setDrift(driftRes);
-      setDriftHistory(driftHistoryRes);
+      const [latest, history, decision] = results;
+      if (latest.status === "fulfilled") setDrift(latest.value);
+      if (history.status === "fulfilled") setDriftHistory(history.value.rows ?? []);
+      if (decision.status === "fulfilled") setDecisionDrift(decision.value.rows ?? []);
+      if (results.every((result) => result.status === "rejected")) {
+        throw new Error(extractMessage(results[0]));
+      }
     });
-  }, [activeTab, normalizedBaseUrl]);
+  }, [activeTab, normalizedBaseUrl, budgetPct, refreshToken]);
 
   useEffect(() => {
-    if (activeTab !== "Experiment Simulation") return;
+    if (activeTab !== "Targeting Strategy") return;
     runLoad(async () => {
-      const simulation = await apiPost(normalizedBaseUrl, "/simulate-experiment", {
-        budgets: [targetsBudget / 100],
+      const targetRes = await apiGet(normalizedBaseUrl, `/targets/${budgetPct}?limit=100`);
+      setTargets(targetRes.rows ?? []);
+      setTargetSummary({
+        totalRows: targetRes.total_rows ?? null,
+        returnedRows: targetRes.returned_rows ?? 0,
       });
-      setExperimentSimulation(simulation);
     });
-  }, [activeTab, normalizedBaseUrl, targetsBudget]);
+  }, [activeTab, normalizedBaseUrl, budgetPct, refreshToken]);
 
-  const selectedPredictionRows = customerExplanation
-    ? [customerExplanation.prediction]
-    : [];
+  useEffect(() => {
+    if (activeTab !== "Customer Explorer") return;
+    setCustomerError("");
+    setCustomerExplanation(null);
+    setLlmDecision(null);
+    runLoad(async () => {
+      const results = await Promise.allSettled([
+        apiGet(normalizedBaseUrl, "/predictions?limit=250&sort_by=policy_net_benefit"),
+        apiGet(normalizedBaseUrl, `/targets/${budgetPct}?limit=100`),
+      ]);
+      const [predictionRes, targetRes] = results;
+
+      let sourceRows = [];
+      if (predictionRes.status === "fulfilled") {
+        sourceRows = predictionRes.value.rows ?? [];
+      } else if (targetRes.status === "fulfilled") {
+        sourceRows = targetRes.value.rows ?? [];
+        setCustomerError(
+          "Saved prediction rows could not be loaded, so the explorer is using the current target list instead.",
+        );
+      } else {
+        setPredictions([]);
+        setCustomerError(
+          "Customer rows could not be loaded from the API. Check that the backend is still running, then retry.",
+        );
+        return;
+      }
+
+      setPredictions(sourceRows);
+      setError("");
+      if (sourceRows.length > 0) {
+        const fallbackKey = `${sourceRows[0].CustomerID}||${sourceRows[0].invoice_month}`;
+        setSelectedPrediction((current) => {
+          const exists = sourceRows.some(
+            (row) => `${row.CustomerID}||${row.invoice_month}` === current,
+          );
+          return exists ? current : fallbackKey;
+        });
+      }
+    });
+  }, [activeTab, normalizedBaseUrl, refreshToken, budgetPct]);
+
+  const selectedFrontierPoint = frontier.find(
+    (row) => Number(row.budget_k) === Number(selectedBudgetFraction),
+  ) ?? frontier.find((row) => Number(row.budget_k) === Number(budgetPct / 100));
+
+  const annotatedPredictions = useMemo(
+    () => addLocalSegments(predictions, segmentType),
+    [predictions, segmentType],
+  );
+
+  const selectedSegmentPredictions = useMemo(() => {
+    let rows = annotatedPredictions;
+    const targetColumn = `target_k${String(budgetPct).padStart(2, "0")}`;
+    rows = rows.filter((row) => row[targetColumn] === 1);
+    if (selectedSegment) {
+      rows = rows.filter((row) => row.local_segment_value === selectedSegment);
+    }
+    return rows;
+  }, [annotatedPredictions, selectedSegment, budgetPct]);
+
+  useEffect(() => {
+    if (activeTab !== "Customer Explorer") return;
+    if (!selectedPrediction || !selectedSegmentPredictions.length) return;
+    const exists = selectedSegmentPredictions.some(
+      (row) => `${row.CustomerID}||${row.invoice_month}` === selectedPrediction,
+    );
+    if (!exists) {
+      const next = selectedSegmentPredictions[0];
+      setSelectedPrediction(`${next.CustomerID}||${next.invoice_month}`);
+    }
+  }, [activeTab, selectedPrediction, selectedSegmentPredictions]);
+
+  useEffect(() => {
+    if (activeTab !== "Customer Explorer" || !selectedPrediction || !selectedSegmentPredictions.length) {
+      if (activeTab === "Customer Explorer" && !selectedSegmentPredictions.length) {
+        setCustomerExplanation(null);
+        setLlmDecision(null);
+      }
+      return;
+    }
+    const [customerId, invoiceMonth] = selectedPrediction.split("||");
+    runLoad(async () => {
+      const results = await Promise.allSettled([
+        apiGet(
+          normalizedBaseUrl,
+          `/customers/explain?customer_id=${encodeURIComponent(customerId)}&invoice_month=${encodeURIComponent(invoiceMonth)}&top_n=5`,
+        ),
+        apiPost(normalizedBaseUrl, "/llm/explain_customer", {
+          customer_id: customerId,
+          invoice_month: invoiceMonth,
+          top_n: 5,
+        }),
+      ]);
+      const [explanationRes, llmRes] = results;
+      if (explanationRes.status === "fulfilled") {
+        setCustomerExplanation(explanationRes.value);
+        setCustomerError("");
+      }
+      if (llmRes.status === "fulfilled") {
+        setLlmDecision(llmRes.value);
+      } else if (explanationRes.status === "fulfilled") {
+        setLlmDecision({
+          answer: "Grounded decision narrative is temporarily unavailable, but the prediction and feature contributions are still shown below.",
+        });
+      }
+      if (explanationRes.status === "rejected") {
+        setCustomerError(
+          "The selected customer could not be explained from saved predictions. Try another row or rerun scoring.",
+        );
+      }
+    });
+  }, [activeTab, normalizedBaseUrl, selectedPrediction, refreshToken, selectedSegmentPredictions.length]);
+
+  const selectedCustomerRow = useMemo(() => {
+    const sourceRows = selectedSegmentPredictions.length ? selectedSegmentPredictions : [];
+    const index = sourceRows.findIndex(
+      (row) => `${row.CustomerID}||${row.invoice_month}` === selectedPrediction,
+    );
+    return {
+      rows: sourceRows,
+      rank: index >= 0 ? index + 1 : null,
+    };
+  }, [annotatedPredictions, selectedPrediction, selectedSegmentPredictions]);
 
   async function submitChatQuery() {
     await runLoad(async () => {
@@ -381,38 +306,79 @@ export default function App() {
     });
   }
 
+  const contributionPositiveRows = (customerExplanation?.top_positive_contributors ?? []).map((row) => ({
+    feature: row.feature,
+    contribution: row.contribution_logit ?? row.shap_value ?? 0,
+    featureValue: row.feature_value,
+  }));
+  const contributionNegativeRows = (customerExplanation?.top_negative_contributors ?? []).map((row) => ({
+    feature: row.feature,
+    contribution: row.contribution_logit ?? row.shap_value ?? 0,
+    featureValue: row.feature_value,
+  }));
+
+  const latestPsi = Number(driftHistory?.[0]?.top_psi ?? drift?.alerts?.top_psi ?? 0);
+  const previousPsi = Number(driftHistory?.[1]?.top_psi ?? latestPsi);
+  const trendDirection = latestPsi > previousPsi ? "Up" : latestPsi < previousPsi ? "Down" : "Flat";
+
+  if (error && !health && !loading) {
+    return (
+      <div className="app-shell">
+        <ErrorState message={error} onRetry={retryLoad} />
+      </div>
+    );
+  }
+
   return (
     <div className="app-shell">
       <header className="app-header">
         <div>
-          <div className="eyebrow">Decision Support UI</div>
-          <h1>ChurnXGB React Frontend</h1>
+          <div className="eyebrow">Decision Intelligence Workspace</div>
+          <h1>ChurnXGB Frontend</h1>
           <p className="subtle">
-            React UI backed by FastAPI endpoints. Backend remains the source of
-            truth for scoring, simulation, and explanations.
+            An interactive analytics layer over the existing FastAPI backend, with shared budget
+            and segment state, stronger explainability, and decision-focused reporting.
           </p>
         </div>
-        <label className="api-input">
-          <span>API Base URL</span>
-          <input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} />
-        </label>
+        <div className="header-actions">
+          <label className="api-input">
+            <span>API Base URL</span>
+            <input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} />
+          </label>
+          <label className="api-input compact">
+            <span>Budget K</span>
+            <select
+              value={budgetPct}
+              onChange={(event) => {
+                const next = Number(event.target.value);
+                setBudgetPct(next);
+                setSelectedBudgetX(next / 100);
+              }}
+            >
+              <option value={5}>5%</option>
+              <option value={10}>10%</option>
+              <option value={20}>20%</option>
+            </select>
+          </label>
+          <button type="button" className="retry-button subtle-button" onClick={retryLoad}>
+            Retry data
+          </button>
+        </div>
       </header>
 
       <section className="hero-strip">
         <div className="hero-copy">
-          <div className="hero-title">Decision system, not just score tables</div>
+          <div className="hero-title">Interactive decision analytics for retention targeting</div>
           <div className="hero-text">
-            Explore targeting, explanations, drift, and simulations from the backend as
-            a single decision workflow.
+            Hover, click, and filter across the budget frontier, segments, drift trends, and
+            customer list. The whole dashboard stays tied to the selected budget and segment.
           </div>
         </div>
-        <button
-          type="button"
-          className="hero-cta"
-          onClick={() => setActiveTab("Chat / Ask")}
-        >
-          Open Chat / Ask
-        </button>
+        <div className="hero-kpis">
+          <div className="hero-chip">API {health?.status ?? "n/a"}</div>
+          <div className="hero-chip">Budget {formatPct(selectedBudgetFraction, 0)}</div>
+          <div className="hero-chip">Model {summary?.manifest?.best_model ?? "n/a"}</div>
+        </div>
       </section>
 
       <nav className="tab-row">
@@ -428,445 +394,310 @@ export default function App() {
         ))}
       </nav>
 
-      {loading ? <div className="banner info">Loading...</div> : null}
-      {error ? <div className="banner error">{error}</div> : null}
+      {error ? (
+        <div className="banner error">
+          {error}
+          <button type="button" className="retry-button inline" onClick={retryLoad}>
+            Retry
+          </button>
+        </div>
+      ) : null}
 
-      {activeTab === "Overview" && (
-        <section className="page-grid">
-          <div className="metrics-grid">
-            <MetricCard label="API Status" value={health?.status ?? "n/a"} />
-            <MetricCard label="Promoted Model" value={health?.model_name ?? "n/a"} />
-            <MetricCard
-              label="Best Model"
-              value={modelSummary?.manifest?.best_model ?? "n/a"}
-            />
-            <MetricCard
-              label="Chosen Budget"
-              value={modelSummary?.manifest?.chosen_budget ?? "n/a"}
-            />
+      {loading && !summary ? <LoadingGrid lines={4} /> : null}
+
+      {activeTab === "Executive Summary" && (
+        <div className="page-grid">
+          <div className="metrics-grid span-12">
+            <MetricCard label="Promoted Model" value={health?.model_name ?? "n/a"} tone="primary" />
+            <MetricCard label="Selection Policy" value={summary?.manifest?.selection_policy ?? "n/a"} tone="primary" />
+            <MetricCard label="Test VaR" value={formatCompact(summaryRow?.test_value_at_risk)} tone="primary" />
+            <MetricCard label="Test Net Benefit" value={formatCompact(summaryRow?.test_net_benefit_at_k)} tone="gain" />
+            <MetricCard label="Brier Score" value={formatNumber(summaryRow?.test_brier_score, 3)} tone="primary" />
           </div>
-          <div className="panel span-7">
-            <h2>Decision Snapshot</h2>
-            <div className="snapshot-grid">
-              <div className="snapshot-card">
-                <div className="snapshot-label">Selection Policy</div>
-                <div className="snapshot-value">
-                  {modelSummary?.manifest?.selection_policy ?? "n/a"}
-                </div>
-              </div>
-              <div className="snapshot-card">
-                <div className="snapshot-label">Test VaR</div>
-                <div className="snapshot-value">
-                  {formatCompact(comparisonRow?.test_value_at_risk)}
-                </div>
-              </div>
-              <div className="snapshot-card">
-                <div className="snapshot-label">Test Net Benefit</div>
-                <div className="snapshot-value">
-                  {formatCompact(comparisonRow?.test_net_benefit_at_k)}
-                </div>
-              </div>
-              <div className="snapshot-card">
-                <div className="snapshot-label">ROC-AUC</div>
-                <div className="snapshot-value">{formatNumber(comparisonRow?.test_roc_auc, 3)}</div>
-              </div>
-            </div>
-          </div>
-          <div className="panel span-5">
-            <h2>Policy Strength</h2>
-            <div className="meter-stack">
-              <div>
-                <div className="meter-label">Value at risk captured</div>
-                <SegmentedBar
-                  segments={[
-                    {
-                      label: "covered",
-                      value: Number(comparisonRow?.test_var_covered_frac ?? 0),
-                      color: "linear-gradient(90deg, #113c68, #2d6aa3)",
-                    },
-                    {
-                      label: "remaining",
-                      value: 1 - Number(comparisonRow?.test_var_covered_frac ?? 0),
-                      color: "#dfe8ef",
-                    },
-                  ]}
-                />
-                <div className="meter-caption">
-                  {formatPct(comparisonRow?.test_var_covered_frac)}
-                </div>
-              </div>
-              <div>
-                <div className="meter-label">Precision at chosen budget</div>
-                <SegmentedBar
-                  segments={[
-                    {
-                      label: "precision",
-                      value: Number(comparisonRow?.test_precision_at_k ?? 0),
-                      color: "linear-gradient(90deg, #a85d2d, #d28b49)",
-                    },
-                    {
-                      label: "other",
-                      value: 1 - Number(comparisonRow?.test_precision_at_k ?? 0),
-                      color: "#ece8e1",
-                    },
-                  ]}
-                />
-                <div className="meter-caption">
-                  {formatPct(comparisonRow?.test_precision_at_k)}
-                </div>
-              </div>
-            </div>
-          </div>
-          <div className="panel">
-            <h2>Model Summary</h2>
-            <pre>{JSON.stringify(modelSummary, null, 2)}</pre>
-          </div>
-          <div className="panel">
-            <h2>Policy Metrics</h2>
-            <DataTable rows={policyMetrics?.rows ?? []} />
-          </div>
-          <HorizontalMetricChart
-            title="Model Comparison By Test Net Benefit"
-            rows={modelComparison?.rows ?? []}
-            labelKey="model"
-            valueKey="test_net_benefit_at_k"
-            formatter={(value) => formatCompact(value)}
+          <InteractiveLineChart
+            title="Budget Frontier"
+            eyebrow="Hover, click, and lock points"
+            rows={frontier}
+            xKey="budget_k"
+            selectedX={selectedBudgetFraction}
+            onSelectX={(value) => {
+              setSelectedBudgetX(value);
+              setBudgetPct(Math.round(Number(value) * 100));
+            }}
+            baselineKey="net_benefit_at_k"
+            showOptimal
+            series={[
+              { key: "value_at_risk", label: "VaR@K", color: "#1c5d99" },
+              { key: "net_benefit_at_k", label: "Net Benefit@K", color: "#2a9d8f" },
+              { key: "lift_at_k", label: "Lift@K", color: "#bc4749" },
+            ]}
           />
-          <HorizontalMetricChart
-            title="Global Feature Importance"
-            rows={featureImportance?.rows ?? []}
-            labelKey="feature"
-            valueKey="importance"
-            formatter={(value) => formatNumber(value, 3)}
+          <DecisionPanel
+            budgetPct={budgetPct}
+            simulationRow={policySimulationRow}
+            frontierPoint={selectedFrontierPoint}
           />
-        </section>
+          <ChartCard title="Recommendation Notes" eyebrow="Short readout" className="span-12">
+            <div className="decision-note">{recommendationText(selectedFrontierPoint, policySimulationRow)}</div>
+          </ChartCard>
+          <DataTable
+            title="Model Comparison"
+            rows={comparison}
+            highlightMetric="test_net_benefit_at_k"
+            negativeMetric="test_net_benefit_at_k"
+          />
+        </div>
       )}
 
-      {activeTab === "Targeting Simulator" && (
-        <section className="page-grid">
-          <div className="panel controls">
-            <h2>Budget</h2>
-            <select
-              value={targetsBudget}
-              onChange={(e) => setTargetsBudget(Number(e.target.value))}
-            >
-              <option value={5}>5%</option>
-              <option value={10}>10%</option>
-              <option value={20}>20%</option>
-            </select>
+      {activeTab === "Targeting Strategy" && (
+        <div className="page-grid">
+          <div className="metrics-grid span-12">
+            <MetricCard label="Selection Overlap" value={formatPct(policySimulationRow?.selection_overlap_at_k)} tone="primary" />
+            <MetricCard label="Net Benefit Delta" value={formatCompact(policySimulationRow?.comparison_minus_baseline)} tone={Number(policySimulationRow?.comparison_minus_baseline ?? 0) >= 0 ? "gain" : "loss"} />
+            <MetricCard label="Customers Targeted" value={selectedFrontierPoint?.targeted_count ?? "n/a"} tone="primary" />
+            <MetricCard label="Risk Level" value={Number(policySimulationRow?.comparison_minus_baseline ?? 0) >= 0 ? "Medium" : "High"} tone="primary" />
           </div>
-          <div className="metrics-grid">
-            <MetricCard
-              label="Ranking Changed"
-              value={policySimulation?.results?.[0]?.ranking_changed ? "Yes" : "No"}
-            />
-            <MetricCard
-              label="% Rank Changed"
-              value={
-                policySimulation?.results?.[0]?.pct_customers_rank_changed !== undefined
-                  ? `${(policySimulation.results[0].pct_customers_rank_changed * 100).toFixed(1)}%`
-                  : "n/a"
-              }
-            />
-            <MetricCard
-              label="Only In VaR Top-K"
-              value={policySimulation?.results?.[0]?.n_selected_only_baseline ?? "n/a"}
-            />
-            <MetricCard
-              label="Only In Net-Benefit Top-K"
-              value={policySimulation?.results?.[0]?.n_selected_only_comparison ?? "n/a"}
-            />
-          </div>
-          <div className="panel span-6">
-            <h2>Selection Overlap</h2>
-            <p className="subtle panel-copy">
-              This compares how much the baseline ranking and net-benefit ranking overlap
-              at the selected budget.
-            </p>
-            <SegmentedBar
-              segments={[
-                {
-                  label: "overlap",
-                  value: Number(policyResult?.selection_overlap_at_k ?? 0),
-                  color: "linear-gradient(90deg, #153e75, #2c7bc6)",
-                },
-                {
-                  label: "different",
-                  value: 1 - Number(policyResult?.selection_overlap_at_k ?? 0),
-                  color: "linear-gradient(90deg, #e7b18c, #d2743a)",
-                },
-              ]}
-            />
-            <div className="meter-caption">
-              overlap {formatPct(policyResult?.selection_overlap_at_k)}
-            </div>
-          </div>
-          <div className="panel span-6">
-            <h2>Economic Difference</h2>
-            <div className="big-number">
-              {formatCompact(policyResult?.comparison_minus_baseline)}
-            </div>
-            <div className="subtle">
-              Comparison policy minus baseline at the selected budget.
-            </div>
-          </div>
-          <div className="panel">
-            <h2>Policy Simulation</h2>
-            <p className="subtle">
-              Assumption-driven threshold analysis with flat configured intervention
-              cost and success rate. This is not causal inference.
-            </p>
-            <pre>{JSON.stringify(policySimulation, null, 2)}</pre>
-          </div>
-          <div className="panel">
-            <h2>Target List</h2>
-            <DataTable rows={targets?.rows ?? []} />
-          </div>
-        </section>
+          <InteractiveLineChart
+            title="Budget vs VaR vs Net Benefit"
+            eyebrow="Click a point to update the whole dashboard"
+            rows={frontier}
+            xKey="budget_k"
+            selectedX={selectedBudgetFraction}
+            onSelectX={(value) => {
+              setSelectedBudgetX(value);
+              setBudgetPct(Math.round(Number(value) * 100));
+            }}
+            baselineKey="net_benefit_at_k"
+            showOptimal
+            series={[
+              { key: "value_at_risk", label: "VaR@K", color: "#1d3557" },
+              { key: "net_benefit_at_k", label: "Net Benefit@K", color: "#2a9d8f" },
+            ]}
+          />
+          <DecisionPanel
+            budgetPct={budgetPct}
+            simulationRow={policySimulationRow}
+            frontierPoint={selectedFrontierPoint}
+            targetedCountOverride={targetSummary.totalRows}
+          />
+          <DataTable
+            title="Top Target Customers"
+            rows={targets}
+            highlightMetric="policy_net_benefit"
+            negativeMetric="policy_net_benefit"
+          />
+        </div>
       )}
 
-      {activeTab === "Customer Explanation" && (
-        <section className="page-grid">
-          <div className="panel controls span-4">
-            <h2>Customer Row</h2>
-            <p className="subtle panel-copy">
-              This page explains a saved scored customer row from the backend. If this is
-              empty, the API is unreachable or the offline scoring outputs are missing.
-            </p>
-            <select
-              value={selectedPrediction}
-              onChange={(e) => setSelectedPrediction(e.target.value)}
-              disabled={!predictions?.rows?.length}
-            >
-              {!predictions?.rows?.length ? (
-                <option value="">No customer rows loaded</option>
-              ) : null}
-              {(predictions?.rows ?? []).map((row) => {
-                const key = `${row.CustomerID}||${row.invoice_month}`;
-                return (
-                  <option key={key} value={key}>
-                    {row.CustomerID} - {row.invoice_month}
-                  </option>
-                );
-              })}
-            </select>
-            {customerLoadError ? <div className="inline-error">{customerLoadError}</div> : null}
-          </div>
-          <div className="panel span-8">
-            <h2>Prediction</h2>
-            <p className="subtle">
-              {explanationMethod === "logistic_pipeline_logit_contributions"
-                ? "For the logistic-regression explanation path, contributions are shown relative to the standardized baseline, which corresponds to the training-data mean after scaling."
-                : "This explanation comes from the backend explanation path for the selected scored customer."}
-            </p>
-            {customerExplanation ? (
-              <div className="snapshot-grid">
-                <div className="snapshot-card">
-                  <div className="snapshot-label">Customer</div>
-                  <div className="snapshot-value">
-                    {customerExplanation.identifiers?.CustomerID ?? "n/a"}
-                  </div>
-                </div>
-                <div className="snapshot-card">
-                  <div className="snapshot-label">Month</div>
-                  <div className="snapshot-value">
-                    {customerExplanation.identifiers?.invoice_month ?? "n/a"}
-                  </div>
-                </div>
-                <div className="snapshot-card">
-                  <div className="snapshot-label">Churn Probability</div>
-                  <div className="snapshot-value">
-                    {formatPct(customerExplanation.prediction?.churn_prob)}
-                  </div>
-                </div>
-                <div className="snapshot-card">
-                  <div className="snapshot-label">Policy Net Benefit</div>
-                  <div className="snapshot-value">
-                    {formatNumber(customerExplanation.prediction?.policy_net_benefit, 2)}
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <div className="empty-state">
-                Pick a customer row after the backend loads saved predictions.
-              </div>
-            )}
-          </div>
-          <ContributionBars
-            title="Top Positive Contributors"
-            rows={customerExplanation?.top_positive_contributors ?? []}
-            tone="positive"
+      {activeTab === "Model Performance" && (
+        <div className="page-grid">
+          <InteractiveLineChart
+            title="Backtest Stability Across Folds"
+            eyebrow="Hover to inspect fold-level values"
+            rows={backtest}
+            xKey="fold"
+            selectedX={backtest?.[0]?.fold}
+            series={[
+              { key: "value_at_risk", label: "VaR@K", color: "#1d3557" },
+              { key: "net_benefit_at_k", label: "Net Benefit@K", color: "#2a9d8f" },
+              { key: "roc_auc", label: "ROC-AUC", color: "#bc4749" },
+            ]}
           />
-          <ContributionBars
-            title="Top Negative Contributors"
-            rows={customerExplanation?.top_negative_contributors ?? []}
-            tone="negative"
+          <DataTable
+            title="Backtest Detail"
+            rows={backtest}
+            highlightMetric="net_benefit_at_k"
+            negativeMetric="net_benefit_at_k"
           />
-        </section>
+        </div>
+      )}
+
+      {activeTab === "Segment Analysis" && (
+        <div className="page-grid">
+          <ChartCard
+            title="Segment Controls"
+            className="span-12"
+            actions={
+              <label className="api-input compact">
+                <span>Segment family</span>
+                <select
+                  value={segmentType}
+                  onChange={(event) => {
+                    setSegmentType(event.target.value);
+                    setSelectedSegment("");
+                  }}
+                >
+                  <option value="segment_value_band">Value bands</option>
+                  <option value="segment_recency_bucket">Recency buckets</option>
+                  <option value="segment_frequency_bucket">Frequency buckets</option>
+                </select>
+              </label>
+            }
+          >
+            <div className="subtle">Click a segment card to filter the customer list in the Customer Explorer.</div>
+          </ChartCard>
+          <SegmentGroupedChart
+            title="Segment Net Benefit Comparison"
+            rows={segments}
+            metricKey="net_benefit_at_k"
+            metricLabel="Net Benefit@K"
+            selectedSegment={selectedSegment}
+            onSelectSegment={setSelectedSegment}
+          />
+          <SegmentGroupedChart
+            title="Segment Lift Comparison"
+            rows={segments}
+            metricKey="lift_at_k"
+            metricLabel="Lift@K"
+            selectedSegment={selectedSegment}
+            onSelectSegment={setSelectedSegment}
+          />
+          <DataTable
+            title="Segment Detail"
+            rows={segments}
+            highlightMetric="net_benefit_at_k"
+            negativeMetric="net_benefit_at_k"
+          />
+        </div>
       )}
 
       {activeTab === "Drift Monitoring" && (
-        <section className="page-grid">
-          <div className="metrics-grid">
-            <MetricCard label="Features OK" value={drift?.summary?.n_ok ?? "n/a"} />
-            <MetricCard label="Warnings" value={drift?.summary?.n_warn ?? "n/a"} />
-            <MetricCard label="Alerts" value={drift?.summary?.n_alert ?? "n/a"} />
-            <MetricCard label="Rows Scored" value={drift?.n_rows_current ?? "n/a"} />
+        <div className="page-grid">
+          <div className="metrics-grid span-12">
+            <MetricCard label="Drift Status" value={drift?.alerts?.overall_status ?? "n/a"} tone={drift?.alerts?.overall_status === "ok" ? "gain" : drift?.alerts?.overall_status === "warn" ? "primary" : "loss"} />
+            <MetricCard label="Latest PSI" value={formatNumber(latestPsi, 3)} tone={latestPsi >= 0.2 ? "loss" : latestPsi >= 0.1 ? "primary" : "gain"} />
+            <MetricCard label="Trend Direction" value={trendDirection} tone="primary" />
+            <MetricCard label="Rows Scored" value={drift?.n_rows_current ?? "n/a"} tone="primary" />
           </div>
-          <div className="panel">
-            <h2>Monitoring Status</h2>
-            <div className="snapshot-grid">
-              <div className="snapshot-card">
-                <div className="snapshot-label">Overall Status</div>
-                <div className="snapshot-value">
-                  {drift?.alerts?.overall_status ?? "n/a"}
-                </div>
-              </div>
-              <div className="snapshot-card">
-                <div className="snapshot-label">Top PSI</div>
-                <div className="snapshot-value">
-                  {formatNumber(drift?.alerts?.top_psi ?? drift?.summary?.top_psi, 3)}
-                </div>
-              </div>
-              <div className="snapshot-card">
-                <div className="snapshot-label">Generated</div>
-                <div className="snapshot-value small">
-                  {drift?.generated_at_utc ?? "n/a"}
-                </div>
-              </div>
-            </div>
-          </div>
-          <div className="panel span-7">
-            <h2>Feature Drift</h2>
-            <DataTable
-              rows={Object.entries(drift?.features ?? {}).map(([feature, info]) => ({
-                feature,
-                ...info,
-              }))}
-            />
-          </div>
-          <div className="panel span-5">
-            <h2>Score Distribution</h2>
-            <pre>{JSON.stringify(drift?.score_current_stats ?? {}, null, 2)}</pre>
-          </div>
-          <div className="panel">
-            <h2>Drift History</h2>
-            <TrendBars
-              rows={[...driftHistoryRows].reverse()}
-              valueKey="top_psi"
-              labelKey="generated_at_utc"
-            />
-            <DataTable rows={driftHistoryRows} />
-          </div>
-        </section>
+          <InteractiveLineChart
+            title="Decision Drift Over Time"
+            eyebrow="Top-K decision quality by month"
+            rows={decisionDrift}
+            xKey="invoice_month"
+            selectedX={decisionDrift?.[decisionDrift.length - 1]?.invoice_month}
+            series={[
+              { key: "avg_churn_prob_top_k", label: "Avg Churn Prob Top-K", color: "#1d3557" },
+              { key: "avg_value_pos_top_k", label: "Avg Value Top-K", color: "#2a9d8f" },
+              { key: "var_at_k", label: "VaR@K", color: "#bc4749" },
+            ]}
+          />
+          <InteractiveLineChart
+            title="Drift History"
+            eyebrow="Thresholds shown for PSI"
+            rows={[...driftHistory].reverse()}
+            xKey="generated_at_utc"
+            selectedX={driftHistory?.[0]?.generated_at_utc}
+            thresholdLines={[
+              { value: 0.1, label: "PSI warn = 0.1", tone: "warn" },
+              { value: 0.2, label: "PSI critical = 0.2", tone: "critical" },
+            ]}
+            series={[
+              { key: "top_psi", label: "Top PSI", color: "#bc4749" },
+              { key: "score_mean", label: "Mean Score", color: "#1d3557" },
+            ]}
+          />
+          <DataTable title="Feature Drift Detail" rows={Object.entries(drift?.features ?? {}).map(([feature, info]) => ({ feature, ...info }))} />
+        </div>
       )}
 
-      {activeTab === "Experiment Simulation" && (
-        <section className="page-grid">
-          <div className="panel controls">
-            <h2>Budget</h2>
-            <select
-              value={targetsBudget}
-              onChange={(e) => setTargetsBudget(Number(e.target.value))}
-            >
-              <option value={5}>5%</option>
-              <option value={10}>10%</option>
-              <option value={20}>20%</option>
-            </select>
+      {activeTab === "Customer Explorer" && (
+        <div className="page-grid">
+          <ChartCard title="Customer Controls" className="span-12" eyebrow="Cross-filtered by budget and segment">
+            {annotatedPredictions.length ? (
+              <>
+                <div className="controls-grid">
+                  <label className="api-input">
+                    <span>Segment filter</span>
+                    <select value={selectedSegment} onChange={(event) => setSelectedSegment(event.target.value)}>
+                      <option value="">All segments</option>
+                      {[...new Set(annotatedPredictions.map((row) => row.local_segment_value))].map((segment) => (
+                        <option key={segment} value={segment}>
+                          {segment}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="api-input">
+                    <span>Customer-month row</span>
+                    <select value={selectedPrediction} onChange={(event) => setSelectedPrediction(event.target.value)}>
+                      {selectedSegmentPredictions.map((row) => {
+                        const value = `${row.CustomerID}||${row.invoice_month}`;
+                        return (
+                          <option key={value} value={value}>
+                            {row.CustomerID} | {row.invoice_month}
+                          </option>
+                        );
+                      })}
+                    </select>
+                  </label>
+                </div>
+                {customerError ? <div className="customer-inline-note">{customerError}</div> : null}
+                {!selectedSegmentPredictions.length ? (
+                  <div className="customer-inline-note">
+                    No customers matched the current budget and segment filter. Try a different segment or budget.
+                  </div>
+                ) : null}
+              </>
+            ) : (
+              <EmptyState title="No scored predictions loaded" message="Run the scoring pipeline and start the API to explore customer rows." />
+            )}
+          </ChartCard>
+          <div className="metrics-grid span-12">
+            <MetricCard label="Rank Position" value={selectedCustomerRow.rank ?? "n/a"} tone="primary" />
+            <MetricCard label="Churn Probability" value={formatPct(customerExplanation?.prediction?.churn_prob)} tone="primary" />
+            <MetricCard label="Policy Score" value={formatCompact(customerExplanation?.prediction?.policy_ml)} tone="primary" />
+            <MetricCard label="Policy Net Benefit" value={formatCompact(customerExplanation?.prediction?.policy_net_benefit)} tone={Number(customerExplanation?.prediction?.policy_net_benefit ?? 0) >= 0 ? "gain" : "loss"} />
           </div>
-          <div className="metrics-grid">
-            <MetricCard
-              label="Targeted Customers"
-              value={experimentSimulation?.results?.[0]?.targeted_customers ?? "n/a"}
-            />
-            <MetricCard
-              label="Treatment Customers"
-              value={experimentSimulation?.results?.[0]?.treatment_customers ?? "n/a"}
-            />
-            <MetricCard
-              label="Control Customers"
-              value={experimentSimulation?.results?.[0]?.control_customers ?? "n/a"}
-            />
-            <MetricCard
-              label="Incremental Retained Value"
-              value={
-                experimentSimulation?.results?.[0]?.incremental_retained_value !== undefined
-                  ? experimentSimulation.results[0].incremental_retained_value.toFixed(2)
-                  : "n/a"
-              }
-            />
-          </div>
-          <div className="panel span-6">
-            <h2>Treatment Mix</h2>
-            <SegmentedBar
-              segments={[
-                {
-                  label: "treatment",
-                  value: Number(experimentResult?.treatment_customers ?? 0),
-                  color: "linear-gradient(90deg, #12476f, #2e84c9)",
-                },
-                {
-                  label: "control",
-                  value: Number(experimentResult?.control_customers ?? 0),
-                  color: "linear-gradient(90deg, #d99c52, #b86825)",
-                },
-              ]}
-            />
-          </div>
-          <div className="panel span-6">
-            <h2>Average Incremental Value</h2>
-            <div className="big-number">
-              {formatNumber(
-                experimentResult?.average_incremental_retained_value_per_treated_customer,
-                2,
-              )}
+          <DecisionPanel
+            budgetPct={budgetPct}
+            simulationRow={policySimulationRow}
+            frontierPoint={selectedFrontierPoint}
+            targetedCountOverride={selectedSegmentPredictions.length || null}
+          />
+          <ChartCard title="Why this customer was selected" eyebrow="Model-driven explanation" className="span-12">
+            <div className="decision-note">
+              This customer was selected because their churn score and economic value place them near the top of the
+              current policy ranking. The contribution chart below shows which features pushed the risk score up or down.
             </div>
-            <div className="subtle">Per treated customer in the simulated experiment.</div>
-          </div>
-          <div className="panel">
-            <h2>Experiment Simulation</h2>
-            <p className="subtle">
-              Deterministic business-case simulation only. The backend does not
-              estimate causal uplift or experimental confidence intervals from this
-              repo.
-            </p>
-            <pre>{JSON.stringify(experimentSimulation, null, 2)}</pre>
-          </div>
-        </section>
+            <div className="chat-answer compact">{llmDecision?.answer ?? "Select a customer to generate a grounded explanation."}</div>
+          </ChartCard>
+          <FeatureContributionChart title="Positive Contributors" rows={contributionPositiveRows} tone="blue" />
+          <FeatureContributionChart title="Negative Contributors" rows={contributionNegativeRows} tone="amber" />
+          <DataTable
+            title="Customer Prediction Detail"
+            rows={customerExplanation?.prediction ? [customerExplanation.prediction] : []}
+            negativeMetric="policy_net_benefit"
+          />
+          <DataTable
+            title="Filtered Customer List"
+            rows={selectedSegmentPredictions}
+            highlightMetric="policy_net_benefit"
+            negativeMetric="policy_net_benefit"
+          />
+        </div>
       )}
 
-      {activeTab === "Chat / Ask" && (
-        <section className="page-grid">
-          <div className="panel controls span-5">
-            <h2>Ask The System</h2>
-            <p className="subtle">
-              This chat layer routes to backend tools first, then summarizes tool
-              output. It does not generate scores directly.
+      {activeTab === "Ask / Explain" && (
+        <div className="page-grid">
+          <ChartCard title="Ask the backend" className="span-5">
+            <p className="subtle panel-copy">
+              Ask for a business summary, drift readout, targeting recommendation, or a project walkthrough. This uses grounded backend tools.
             </p>
-            <textarea
-              rows={5}
-              value={chatQuery}
-              onChange={(e) => setChatQuery(e.target.value)}
-            />
-            <button type="button" className="tab active" onClick={submitChatQuery}>
+            <textarea rows={5} value={chatQuery} onChange={(event) => setChatQuery(event.target.value)} />
+            <button type="button" className="retry-button" onClick={submitChatQuery}>
               Run Query
             </button>
-          </div>
-          <div className="panel span-7">
-            <h2>Answer</h2>
+          </ChartCard>
+          <ChartCard title="Decision Narrative" className="span-7">
             <div className="chat-answer">
-              {chatResult?.answer ?? "Ask a question like 'Who should I target at 10% budget?' or 'What changed in the data recently?'."}
+              {chatResult?.answer ?? "Ask a question like 'What should we do at 10% budget?', 'What changed in the data recently?', or 'How does this project work?'."}
             </div>
-          </div>
-          <div className="panel">
-            <h2>Tools Used</h2>
-            <DataTable rows={chatResult?.tools_used ?? []} />
-          </div>
-          <div className="panel">
-            <h2>Raw Tool Data</h2>
+          </ChartCard>
+          <DataTable title="Tool Calls" rows={chatResult?.tools_used ?? []} />
+          <ChartCard title="Grounding Data" className="span-12">
             <pre>{JSON.stringify(chatResult?.raw_data ?? null, null, 2)}</pre>
-          </div>
-        </section>
+          </ChartCard>
+        </div>
       )}
     </div>
   );

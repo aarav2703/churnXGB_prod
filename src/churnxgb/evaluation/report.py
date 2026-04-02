@@ -8,6 +8,91 @@ from churnxgb.evaluation.metrics import (
     total_value_at_risk,
     value_at_risk_at_k,
 )
+from churnxgb.evaluation.classification import classification_summary
+
+
+def policy_frontier(df: pd.DataFrame, policy_col: str, budgets: list[float]) -> pd.DataFrame:
+    rows = []
+    total_var = total_value_at_risk(df)
+    for k in budgets:
+        var_k = value_at_risk_at_k(df, policy_col, k)
+        cls = top_k_classification_metrics(df, policy_col, k)
+        rows.append(
+            {
+                "policy": policy_col,
+                "budget_k": float(k),
+                "value_at_risk": float(var_k),
+                "var_covered_frac": (float(var_k) / total_var) if total_var > 0 else 0.0,
+                "net_benefit_at_k": net_benefit_at_k(df, policy_col, k)
+                if "policy_net_benefit" in df.columns
+                else None,
+                **cls,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def add_segment_columns(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+
+    out["segment_value_band"] = pd.cut(
+        out["rev_sum_90d"].astype(float),
+        bins=[-float("inf"), 50.0, 200.0, float("inf")],
+        labels=["low_value", "mid_value", "high_value"],
+    ).astype(str)
+    out["segment_recency_bucket"] = pd.cut(
+        out["gap_days_prev"].astype(float),
+        bins=[-float("inf"), 30.0, 90.0, float("inf")],
+        labels=["recent", "warming", "stale"],
+    ).astype(str)
+    out["segment_frequency_bucket"] = pd.cut(
+        out["freq_90d"].astype(float),
+        bins=[-float("inf"), 2.0, 5.0, float("inf")],
+        labels=["low_frequency", "mid_frequency", "high_frequency"],
+    ).astype(str)
+    return out
+
+
+def evaluate_segments(
+    df: pd.DataFrame,
+    budgets: list[float],
+    split_name: str,
+    model_name: str,
+    policy_col: str = "policy_net_benefit",
+) -> pd.DataFrame:
+    use = add_segment_columns(df)
+    rows: list[dict] = []
+    segment_cols = [
+        "segment_value_band",
+        "segment_recency_bucket",
+        "segment_frequency_bucket",
+    ]
+    chosen_budget = 0.10 if 0.10 in budgets else float(budgets[0])
+    for segment_col in segment_cols:
+        for segment_value, segment_df in use.groupby(segment_col):
+            if len(segment_df) < 5 or segment_df["churn_90d"].nunique() < 2:
+                continue
+            cls = classification_summary(segment_df["churn_90d"], segment_df["churn_prob"])
+            frontier = policy_frontier(segment_df, policy_col, budgets)
+            budget_row = frontier[frontier["budget_k"] == chosen_budget]
+            if len(budget_row) != 1:
+                continue
+            row = budget_row.iloc[0].to_dict()
+            rows.append(
+                {
+                    "model": model_name,
+                    "split": split_name,
+                    "segment_type": segment_col,
+                    "segment_value": segment_value,
+                    "n_rows": int(len(segment_df)),
+                    "positive_rate": float(segment_df["churn_90d"].mean()),
+                    "roc_auc": float(cls["roc_auc"]),
+                    "pr_auc": float(cls["pr_auc"]),
+                    "brier_score": float(cls["brier_score"]),
+                    **row,
+                }
+            )
+    return pd.DataFrame(rows)
 
 
 def evaluate_policies(df: pd.DataFrame, budgets: list[float]) -> pd.DataFrame:

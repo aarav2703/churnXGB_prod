@@ -26,6 +26,12 @@
     "T",
     "churn_prob",
     "value_pos",
-    "policy_ml"
+    "policy_ml",
+    "assumed_success_rate_customer",
+    "intervention_cost_customer",
+    "expected_retained_value",
+    "expected_cost",
+    "policy_net_benefit",
+    "decision_simulation_assumption_driven"
   ]
 }

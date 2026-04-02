@@ -60,3 +60,45 @@ def plot_lift_curve(policy_df: pd.DataFrame, out_path: Path, title: str) -> Path
     ax.set_title(title)
     ax.legend()
     return _savefig(fig, out_path)
+
+
+def plot_budget_frontier(frontier_df: pd.DataFrame, out_path: Path, title: str) -> Path:
+    fig, ax1 = plt.subplots(figsize=(7, 4))
+    ax1.plot(frontier_df["budget_k"] * 100, frontier_df["value_at_risk"], marker="o", label="VaR@K")
+    ax1.set_xlabel("Budget (% targeted)")
+    ax1.set_ylabel("Value at Risk")
+    ax1.set_title(title)
+
+    ax2 = ax1.twinx()
+    if "net_benefit_at_k" in frontier_df.columns:
+        ax2.plot(
+            frontier_df["budget_k"] * 100,
+            frontier_df["net_benefit_at_k"],
+            marker="s",
+            color="#b86825",
+            label="Net Benefit@K",
+        )
+        ax2.set_ylabel("Net Benefit")
+
+    handles1, labels1 = ax1.get_legend_handles_labels()
+    handles2, labels2 = ax2.get_legend_handles_labels()
+    ax1.legend(handles1 + handles2, labels1 + labels2, loc="best")
+    return _savefig(fig, out_path)
+
+
+def plot_backtest_trend(
+    detail_df: pd.DataFrame,
+    out_path: Path,
+    title: str,
+    value_col: str,
+) -> Path:
+    fig, ax = plt.subplots(figsize=(8, 4))
+    for model_name, model_df in detail_df.groupby("model"):
+        ordered = model_df.sort_values("fold")
+        ax.plot(ordered["fold"], ordered[value_col], marker="o", label=model_name)
+    ax.set_xlabel("Backtest Fold")
+    ax.set_ylabel(value_col.replace("_", " ").title())
+    ax.set_title(title)
+    ax.tick_params(axis="x", rotation=45)
+    ax.legend()
+    return _savefig(fig, out_path)

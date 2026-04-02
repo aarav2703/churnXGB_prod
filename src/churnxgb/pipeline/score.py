@@ -24,6 +24,7 @@ from churnxgb.monitoring.alerts import (
     summarize_drift_alerts,
 )
 from churnxgb.monitoring.drift import drift_report, top_psi_features
+from churnxgb.monitoring.drift import compute_decision_drift
 from churnxgb.monitoring.history import build_drift_history_frame
 from churnxgb.paths import resolve_runtime_root
 from churnxgb.policy.scoring import (
@@ -211,9 +212,12 @@ def build_outputs(
     ref_path = runtime_root / "reports" / "monitoring" / "reference_profile.json"
     mon_dir = runtime_root / "reports" / "monitoring"
     mon_dir.mkdir(parents=True, exist_ok=True)
+    reports_dir = runtime_root / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
 
     drift_out_path = mon_dir / "drift_latest.json"
     drift_history_path = mon_dir / "drift_history.csv"
+    decision_drift_path = reports_dir / "decision_drift.csv"
     drift_report_payload = None
     drift_top = None
     drift_summary = None
@@ -228,6 +232,7 @@ def build_outputs(
     if "decision_targeting_policy" not in df.columns:
         df = df.copy()
         df["decision_targeting_policy"] = ranking_policy
+    decision_drift_df = compute_decision_drift(df, budgets, ranking_policy)
 
     if ref_path.exists():
         drift_report_payload = drift_report(
@@ -263,9 +268,11 @@ def build_outputs(
     stage_pred_dir = stage_dir / "predictions"
     stage_targ_dir = stage_dir / "targets"
     stage_mon_dir = stage_dir / "monitoring"
+    stage_reports_dir = stage_dir / "reports"
     stage_pred_dir.mkdir(parents=True, exist_ok=True)
     stage_targ_dir.mkdir(parents=True, exist_ok=True)
     stage_mon_dir.mkdir(parents=True, exist_ok=True)
+    stage_reports_dir.mkdir(parents=True, exist_ok=True)
 
     stage_pred_path = stage_pred_dir / pred_path.name
     stage_inference_pred_path = stage_pred_dir / inference_pred_path.name
@@ -301,6 +308,8 @@ def build_outputs(
     if drift_report_payload is not None:
         atomic_write_json(stage_drift_path, drift_report_payload)
         atomic_write_csv(drift_history_df, stage_history_path, index=False)
+    stage_decision_drift_path = stage_reports_dir / decision_drift_path.name
+    atomic_write_csv(decision_drift_df, stage_decision_drift_path, index=False)
 
     try:
         os.replace(stage_pred_path, pred_path)
@@ -313,6 +322,7 @@ def build_outputs(
         if drift_report_payload is not None:
             os.replace(stage_drift_path, drift_out_path)
             os.replace(stage_history_path, drift_history_path)
+        os.replace(stage_decision_drift_path, decision_drift_path)
     finally:
         shutil.rmtree(stage_dir, ignore_errors=True)
 
@@ -323,10 +333,12 @@ def build_outputs(
         "ref_path": ref_path,
         "drift_out_path": drift_out_path,
         "drift_history_path": drift_history_path,
+        "decision_drift_path": decision_drift_path,
         "drift_report": drift_report_payload,
         "drift_summary": drift_summary,
         "drift_top": drift_top,
         "drift_alerts": drift_alerts,
+        "decision_drift": decision_drift_df,
     }
 
 
@@ -400,6 +412,7 @@ def main() -> None:
     print("=== SCORED OUTPUTS WRITTEN ===")
     print("predictions:", output_info["pred_path"])
     print("inference_predictions:", output_info["inference_pred_path"])
+    print("decision_drift:", output_info["decision_drift_path"])
     for k in budgets:
         print("targets:", output_info["target_paths"][float(k)])
 
@@ -419,6 +432,10 @@ def main() -> None:
                     str(output_info["target_paths"][float(k)]),
                     artifact_path="scoring_outputs",
                 )
+            mlflow.log_artifact(
+                str(output_info["decision_drift_path"]),
+                artifact_path="monitoring",
+            )
 
             if output_info["drift_report"] is not None:
                 mlflow.log_artifact(str(output_info["drift_out_path"]), artifact_path="monitoring")

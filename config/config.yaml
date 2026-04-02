@@ -54,6 +54,9 @@ mlflow:
   experiment_name: "churnxgb"
   run_name_prefix: "churn_xgb"
 
+calibration:
+  method: platt
+
 model:
   n_estimators: 300
   max_depth: 6

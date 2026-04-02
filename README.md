@@ -1,338 +1,286 @@
-# ChurnXGB: Leakage-Aware Churn Targeting Under Budget Constraints
+# ChurnXGB
 
-This project started as a churn modeling exercise, but I ended up treating it more like a small decision system.
+ChurnXGB is a churn-targeting project built around one practical question:
 
-The question I cared about was not just "who is likely to churn?" It was:
+If a business can only contact a small share of customers, who should it target to protect the most value?
 
-If a retention team can only contact 5% to 20% of customers, who should they prioritize to protect the most value?
+So this repo is not just a churn classifier. It is an offline decision system built on customer-month snapshots, temporal validation, calibrated probabilities, budget-based targeting, and simple local serving through FastAPI and a React dashboard.
 
-That changed the shape of the whole project. Instead of building one model and stopping at AUC, I built a point-in-time customer-month dataset, compared multiple model families, evaluated them with top-K targeting metrics, and then extended the repo into something that can score, explain, simulate policies, monitor drift, and expose all of that through an API and frontend.
+## What This Project Does
 
-## What This Repo Does
+At a high level, the system:
 
-At a high level, the repo now supports:
+- builds point-in-time customer-month features from transaction data
+- predicts 90-day churn
+- compares `xgboost`, `lightgbm`, and `logistic_regression`
+- calibrates probabilities before deployment
+- ranks customers with both `policy_ml` and `policy_net_benefit`
+- evaluates results with standard metrics and decision metrics
+- runs backtests and segment-level analysis
+- tracks feature drift and decision drift
+- serves saved outputs through FastAPI
+- exposes results in Streamlit and React dashboards
 
-- offline feature building, training, and scoring
-- model comparison across `xgboost`, `logistic_regression`, and `lightgbm`
-- budget-aware targeting using both `policy_ml` and `policy_net_benefit`
-- per-customer explanation through the API
-- drift monitoring with latest snapshot, alert summaries, and drift history
-- a FastAPI backend
-- a Streamlit dashboard
-- a React decision UI
-- an optional LLM query layer that sits on top of the backend tools
+The main idea is simple: a model with decent AUC is useful, but a targeting system is better if it can also show who to contact at 5%, 10%, or 20% budget and what the expected tradeoff looks like.
 
-The live runtime artifacts are written to `.runtime/`.
+## Why This Is Different From A Basic Churn Demo
 
-Older root-level `models/`, `outputs/`, and `reports/` paths may still exist in the repo from earlier iterations. I kept them for continuity, but the current pipeline uses `.runtime/...` as the source of truth.
+A lot of churn projects stop at:
 
-## How I Framed the Problem
+"This customer has a high churn probability."
+
+This repo goes further:
+
+- which customers should be targeted at a fixed budget?
+- how much value at risk sits inside the selected group?
+- how does the answer change when intervention cost matters?
+- does performance change across value bands and recency bands?
+- does the decision system stay stable over time?
+
+That makes it much closer to an applied data science project than a notebook-only model demo.
+
+## Problem Setup
 
 Each row is a customer-month snapshot.
 
-Let `T` be the customer's last purchase timestamp in that month.
+For each row:
 
-- features use information available up to `T`
-- labels use events strictly after `T`
-- churn is defined as no purchase in the next 90 days after `T`
+- features use only information available up to that month-end reference point
+- labels are based on future behavior after that point
+- churn means no purchase in the next 90 days
 
-I used that setup because I wanted to avoid the usual leakage problems that show up when churn is framed too loosely. It also felt closer to how a real retention team would use a model: make a decision at a cutoff date, not after seeing the future.
+The project keeps the data grain fixed at customer-month. It does not switch to online event scoring or a different architecture.
 
-## Dataset
+## Repository Shape
 
-- Source: Online Retail II
-- Raw grain: transaction lines
-- Current processed modeling table: 26,993 customer-month rows
-- Current customer-event table: 44,571 rows
-- Observed monthly span: `2009-12` through `2011-12`
+The repo follows a simple production-style structure:
 
-I turned the raw transactions into a customer-month prediction problem because it gave me a practical decision grain for targeting while preserving the time ordering.
+1. Offline pipeline
+   - feature build
+   - train and compare models
+   - calibration
+   - score the saved feature table
+   - write reports and artifacts
 
-## Features
+2. FastAPI layer
+   - prediction and explanation endpoints
+   - budget frontier, segment, and drift endpoints
+   - policy simulation endpoints over saved outputs
 
-I kept the feature set fairly compact and interpretable:
+3. Frontends
+   - Streamlit for artifact review
+   - React for a more interactive decision dashboard
 
-- trailing revenue: `rev_sum_30d`, `rev_sum_90d`, `rev_sum_180d`
-- frequency: `freq_30d`, `freq_90d`
-- revenue volatility: `rev_std_90d`
+## Data And Features
+
+Dataset:
+
+- source: Online Retail II
+- raw grain: transaction lines
+- modeling grain: customer-month
+- latest verified processed table size: `26,993` rows
+
+Core feature families:
+
+- revenue windows: `rev_sum_30d`, `rev_sum_90d`, `rev_sum_180d`
+- frequency windows: `freq_30d`, `freq_90d`
+- volatility: `rev_std_90d`
 - returns: `return_count_90d`
 - average order value proxy: `aov_90d`
-- recency gap: `gap_days_prev`
+- recency: `gap_days_prev`
 
-I deliberately did not turn this into a huge feature factory. The goal here was a solid, leakage-aware baseline that I could still explain clearly.
+The feature set is intentionally compact and interpretable.
 
-## Models and Policies
+## Models And Decision Scores
 
-The repo compares:
+The training pipeline compares:
 
 - `xgboost`
-- `logistic_regression`
 - `lightgbm`
+- `logistic_regression`
 
-I also kept heuristic baselines:
+It also keeps simple heuristic baselines for comparison.
 
-- recency targeting
-- RFM-style targeting
-- random targeting
+The main decision scores are:
 
-That mattered to me because I wanted the learned models to earn their complexity.
+- `policy_ml = churn_prob * value_pos`
+- `policy_net_benefit = expected_retained_value - expected_cost`
 
-The original targeting score was:
+`policy_ml` is useful when you mainly care about risk times value.
 
-`policy_ml = P(churn) * value_pos`
+`policy_net_benefit` is useful when you want a cost-aware ranking under a targeting budget.
 
-where `value_pos` is a trailing-value proxy based on pre-decision revenue.
+## Calibration
 
-The current repo still computes `policy_ml`, but it also computes a cost-aware decision score:
+This repo now calibrates probabilities before deployment.
 
-`policy_net_benefit = expected_retained_value - expected_cost`
+That matters because this system uses predicted probabilities inside downstream ranking and policy calculations. If the probabilities are poorly calibrated, the decision layer gets noisier even if the rank ordering looks okay.
 
-using explicit config-driven economics and customer-level heterogeneity from existing recency, frequency, and value features.
+From the latest verified run:
 
-## What the Pipeline Looks Like
-
-The main pipeline is:
-
-1. `python -m churnxgb.pipeline.build_features`
-2. `python -m churnxgb.pipeline.train`
-3. `python -m churnxgb.pipeline.score`
-
-That pipeline:
-
-- builds the point-in-time feature table
-- trains and compares models
-- logs runs to MLflow
-- promotes the selected model
-- scores the saved feature table
-- writes predictions, target lists, and drift outputs
-
-The current runtime writes to:
-
-- `.runtime/data/...`
-- `.runtime/models/...`
-- `.runtime/outputs/...`
-- `.runtime/reports/...`
-
-## Current Runtime State
-
-From the latest verified runtime artifacts:
-
-- promoted model: `xgboost`
-- selected registry name: `churn_xgboost_v1`
+- promoted model: `lightgbm`
+- promoted artifact: `churn_lightgbm_v1`
+- calibration method: `platt`
 - chosen budget: `10%`
 - selection policy: `policy_net_benefit`
 
-Those values come from:
+Calibration improved the decision layer in the latest run:
 
-- `.runtime/reports/training_manifest.json`
-- `.runtime/models/promoted/production.json`
+- validation net benefit improved from about `14.2k` raw to `37.3k`
+- test net benefit improved from about `21.7k` raw to `53.1k`
+- validation Brier score improved from `0.1832` to `0.1818`
+- test Brier score improved from `0.2170` to `0.2077`
 
-## Results
+That does not mean calibration improves every metric in every setting. It just means it helped the deployed decision setup here, which is exactly why it was worth adding.
 
-These values come from a recent verified run in `.runtime/`, so they should be treated as current runtime outputs rather than timeless fixed benchmarks.
+## Latest Verified Results
+
+These numbers come from a full pipeline run completed in this repo.
+
+### Best model at the selected budget
+
+- model: `lightgbm`
+- run id: `45ff38b82e0e433fbc18d065311e4b9a`
+- budget: `10%`
+- selection policy: `policy_net_benefit`
 
 ### Holdout comparison at 10% budget
 
-| model | val_value_at_risk | test_value_at_risk | test_roc_auc | test_pr_auc | test_brier_score |
+| model | val_net_benefit_at_k | test_net_benefit_at_k | test_value_at_risk | test_roc_auc | test_brier_score |
 |:--|--:|--:|--:|--:|--:|
-| xgboost | 75,325.34 | 165,488.88 | 0.7233 | 0.5805 | 0.2077 |
-| lightgbm | 73,281.12 | 162,022.38 | 0.7205 | 0.5749 | 0.2089 |
-| logistic_regression | 98,494.27 | 159,082.89 | 0.7335 | 0.5819 | 0.2016 |
+| lightgbm | 37,265.96 | 53,074.73 | 128,102.77 | 0.7167 | 0.2077 |
+| logistic_regression | 32,486.32 | 38,294.51 | 152,092.72 | 0.7338 | 0.2016 |
+| xgboost | 34,896.93 | 50,224.41 | 143,190.49 | 0.7224 | 0.2064 |
 
-One thing I actually like about this result is that the "best" model depends on what I care about.
+This is a good example of why the project uses more than one metric:
 
-- logistic regression is strongest on some conventional metrics
-- xgboost is the currently promoted model because the runtime selection is aligned with the deployed decision layer
+- logistic regression is still very competitive on standard classification metrics
+- lightgbm wins on the selected decision objective in the verified run
 
-That feels more honest than forcing one model to win everything.
+### Budget frontier for the promoted model
 
-### Promoted model targeting metrics on test
+| budget_k | value_at_risk | net_benefit_at_k | targeted_count | precision_at_k | recall_at_k | lift_at_k |
+|:--|--:|--:|--:|--:|--:|--:|
+| 5% | 77,688.30 | 41,899.80 | 139 | 0.2014 | 0.0266 | 0.5311 |
+| 10% | 128,102.77 | 53,074.73 | 278 | 0.2338 | 0.0617 | 0.6165 |
+| 20% | 235,673.05 | 67,672.40 | 556 | 0.2824 | 0.1490 | 0.7445 |
 
-| budget_k | value_at_risk | var_covered_frac | precision_at_k | recall_at_k | lift_at_k |
-|:--|--:|--:|--:|--:|--:|
-| 5% | 109,553.17 | 0.1755 | 0.4737 | 0.0624 | 1.2491 |
-| 10% | 165,488.88 | 0.2651 | 0.4281 | 0.1129 | 1.1286 |
-| 20% | 261,772.74 | 0.4194 | 0.4054 | 0.2138 | 1.0691 |
+This frontier is not flat, which is a good sign. The tradeoff between budget, value captured, and net benefit is visible and meaningful.
 
-At 10% budget, the promoted runtime model captures about `165.5k` in value at risk on the test split.
+## Segment Analysis
 
-The repo also now tracks `net_benefit_at_k`, which matters because I did not want the decision layer to stop at VaR alone.
+The project writes segment-level evaluation using existing behavioral features:
 
-### Decision-layer behavior
+- value bands from `rev_sum_90d`
+- recency buckets from `gap_days_prev`
+- frequency buckets from `freq_90d`
 
-The newer decision layer is not just a relabeling of the same ranking. In the latest runtime outputs, the top-K overlap between `policy_ml` and `policy_net_benefit` is below 100%, so the cost-aware ranking does change who gets targeted:
+Verified output:
 
-- 5% budget overlap: `86.6%`
-- 10% budget overlap: `89.4%`
-- 20% budget overlap: `90.6%`
+- `.runtime/reports/evaluation_segments.csv`
+- `27` segment rows in the latest run
 
-That was an important upgrade for me because I did not want the "decision layer" to be purely cosmetic.
+What the latest run shows:
 
-### Backtesting
+- high-value segments carry most of the business value
+- mid-value segments can still contribute positive net benefit
+- low-value segments can show decent lift but weak or negative economics
 
-I added rolling expanding-window backtesting because I did not want the project to depend on a single temporal split.
+That is useful because it separates "the model can find churn" from "the action is worth paying for."
 
-Backtesting was run across 9 chronological folds:
+## Backtesting
 
-- `2010-06_2010-07`
-- `2010-08_2010-09`
-- `2010-10_2010-11`
-- `2010-12_2011-01`
-- `2011-02_2011-03`
-- `2011-04_2011-05`
-- `2011-06_2011-07`
-- `2011-08_2011-09`
-- `2011-10_2011-11`
+The repo also runs expanding-window backtests instead of relying only on one split.
 
-Outputs:
+Saved outputs:
 
 - `.runtime/reports/backtest_detail.csv`
 - `.runtime/reports/backtest_summary.csv`
-- `.runtime/reports/backtest_summary.md`
 
-## API and App Layer
+Why this matters:
 
-The backend is in FastAPI and sits on top of the offline artifacts plus the live scoring path.
+- it checks whether the model and policy are reasonably stable over time
+- it gives a better picture than a single holdout window
 
-Current endpoints include:
+## Monitoring
+
+There are two monitoring layers:
+
+1. Feature drift
+   - PSI by feature
+   - drift summary and alert counts
+
+2. Decision drift
+   - selected share by month
+   - average churn score in top-K
+   - average value in top-K
+   - monthly VaR@K trend
+
+Saved outputs:
+
+- `.runtime/reports/monitoring/drift_latest.json`
+- `.runtime/reports/monitoring/drift_history.csv`
+- `.runtime/reports/decision_drift.csv`
+
+From the latest verified run:
+
+- feature drift status was `ok`
+- latest top PSI was `0.082`
+- decision drift had `75` monthly budget rows
+
+## API
+
+The FastAPI backend serves both live scoring and saved decision artifacts.
+
+Main endpoints:
 
 - `GET /health`
 - `GET /model-summary`
 - `GET /model-comparison`
 - `GET /policy-metrics`
-- `GET /feature-importance`
+- `GET /frontier`
+- `GET /segments`
+- `GET /backtest`
 - `GET /targets/{budget_pct}`
-- `GET /drift/latest`
-- `GET /drift/history`
 - `GET /predictions`
 - `GET /customers/explain`
+- `GET /drift/latest`
+- `GET /drift/history`
+- `GET /drift/decision`
 - `POST /predict`
 - `POST /explain`
 - `POST /simulate-policy`
 - `POST /simulate-experiment`
 - `POST /llm/query`
+- `POST /llm/explain_customer`
 
-Important distinction:
+The last two endpoints are optional helper layers on top of existing backend outputs. They do not replace the model or invent predictions.
 
-- `/predict` and `/explain` use the backend scoring/explanation logic directly
-- many of the summary and simulation endpoints are artifact-backed, so they depend on the offline pipeline having been run first
+## Dashboard Screenshots
 
-Also important:
+### Executive Summary
 
-- `/predict` expects engineered feature columns that match the inference contract
-- it does **not** accept raw transactions
+![Executive Summary](./docs/screenshots/executive-summary.png)
 
-## Interpretability and Monitoring
+### Targeting Strategy
 
-I did not want this repo to be only "train once, report AUC, stop."
+![Targeting Strategy](./docs/screenshots/targeting-strategy.png)
 
-So I added:
+### Model Performance
 
-- feature importance outputs
-- per-customer explanation through the API
-- drift monitoring
+![Model Performance](./docs/screenshots/model-performance.png)
 
-Monitoring is still lightweight, but it now includes:
+### Segment Analysis
 
-- latest drift snapshot
-- alert summaries
-- persisted drift history
+![Segment Analysis](./docs/screenshots/segment-analysis.png)
 
-Key files:
+### Decision Card And Model Comparison
 
-- `.runtime/reports/feature_importance.csv`
-- `.runtime/reports/monitoring/reference_profile.json`
-- `.runtime/reports/monitoring/drift_latest.json`
-- `.runtime/reports/monitoring/drift_history.csv`
+![Decision Card And Model Comparison](./docs/screenshots/decision-card-model-comparison.png)
 
-For the logistic-regression explanation path, contributions are interpreted relative to the standardized baseline, which corresponds to the training-data mean after scaling.
+### Ask / Explain
 
-## Frontends
-
-There are two UI layers in the repo.
-
-### Streamlit
-
-The Streamlit app in `dashboard/app.py` is still useful as a quick artifact-driven demo:
-
-- executive summary
-- policy simulator
-- model performance
-- explainability
-- customer risk exploration
-- drift monitoring
-
-Current screenshot files already in the repo:
-
-![Streamlit dashboard overview](reports/figures/dashboard_overview.png)
-![Streamlit explainability and customer explorer](reports/figures/dashboard_explain_explore.png)
-
-### React frontend
-
-The React app in `frontend/` is the more customized interface.
-
-It now includes:
-
-- overview
-- targeting simulator
-- customer explanation
-- drift monitoring
-- experiment simulation
-- Chat / Ask
-
-The React UI is still backend-driven. It does not compute scores in the browser.
-
-The goal of the React layer is to make the repo feel more like a decision workflow instead of a set of raw tables. So it includes:
-
-- decision snapshot cards
-- bar-style comparison visuals
-- overlap and treatment-mix visuals
-- clearer customer-explanation states
-- a chat panel on top of backend tools
-
-The customer explanation page depends on saved scored predictions. If the offline scoring pipeline has not been run, the page will show an explanatory empty/error state rather than inventing data.
-
-If I include screenshots for the React app in the repo, the two most useful ones are:
-
-- the overview page, which shows the decision snapshot cards and policy strength visuals
-- the Chat / Ask page, which shows the tool-routed LLM layer and raw tool outputs
-
-I intentionally keep both frontends in the README because they serve slightly different purposes:
-
-- Streamlit is the fastest artifact-driven review layer
-- React is the more customized API-driven decision UI
-
-Recommended screenshot paths for the React app:
-
-- `docs/screenshots/react_overview.png`
-- `docs/screenshots/react_chat.png`
-
-I have not replaced the Streamlit section with React because I still think the Streamlit app is useful as a lightweight demo of saved outputs, while React is better for showing the more polished decision workflow.
-
-## LLM Layer
-
-I added a lightweight LLM layer on top of the backend, but I was careful not to let it replace the ML system.
-
-The design is:
-
-User -> LLM query endpoint -> backend tool routing -> existing API/data -> summary
-
-That means:
-
-- the LLM does not generate `churn_prob`
-- the LLM does not generate `policy_ml`
-- the LLM does not generate `policy_net_benefit`
-- it only summarizes grounded backend outputs
-
-The tool-aware layer lives in:
-
-- `src/churnxgb/llm/`
-
-and the public endpoint is:
-
-- `POST /llm/query`
-
-If `DEEPSEEK_API_KEY` is set, the backend can call DeepSeek for the final summary. If not, it falls back to a deterministic grounded summary from the same tool outputs.
+![Ask / Explain](./docs/screenshots/ask-explain.png)
 
 ## How To Run
 
@@ -342,50 +290,55 @@ If `DEEPSEEK_API_KEY` is set, the backend can call DeepSeek for the final summar
 pip install -r requirements.txt
 ```
 
-### 2. Run the offline pipeline
+### 2. Set `PYTHONPATH`
 
 ```powershell
 $env:PYTHONPATH = "$PWD\src"
+```
 
+### 3. Build features
+
+```powershell
 python -m churnxgb.pipeline.build_features
+```
+
+Builds the customer-month feature table from the raw retail data.
+
+### 4. Train models
+
+```powershell
 python -m churnxgb.pipeline.train
+```
+
+Trains candidate models, calibrates probabilities, writes reports, and promotes the selected model.
+
+### 5. Score the saved feature table
+
+```powershell
 python -m churnxgb.pipeline.score
 ```
 
-Or use:
+Scores the saved table, writes predictions and target lists, and updates drift outputs.
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\run.ps1
-```
-
-The current pipeline writes live runtime outputs to `.runtime/`.
-
-### 3. Run tests
+### 6. Run tests
 
 ```powershell
 pytest -q
 ```
 
-### 4. Launch the API
+### 7. Start the API
 
 ```powershell
-$env:PYTHONPATH = "$PWD\src"
 uvicorn churnxgb.api.app:app --host 0.0.0.0 --port 8000
 ```
 
-Example:
-
-```powershell
-Invoke-WebRequest http://127.0.0.1:8000/health
-```
-
-### 5. Launch Streamlit
+### 8. Start Streamlit
 
 ```powershell
 streamlit run dashboard/app.py
 ```
 
-### 6. Launch the React frontend
+### 9. Start the React frontend
 
 ```powershell
 cd frontend
@@ -393,140 +346,68 @@ cmd /c npm.cmd install
 cmd /c npm.cmd run dev
 ```
 
-To build it:
+Optional build check:
 
 ```powershell
+cd frontend
 cmd /c npm.cmd run build
 ```
 
-### 7. Optional: enable the LLM query layer
+## Key Runtime Outputs
 
-Before starting the API, set:
-
-```powershell
-$env:DEEPSEEK_API_KEY="your_key_here"
-```
-
-If you do not set it, the `POST /llm/query` flow still works, but the final answer uses the deterministic fallback summary instead of an external LLM call.
-
-### 8. Docker
-
-There is still a Dockerized API entrypoint for local serving:
-
-```powershell
-docker build -t churnxgb-api .
-docker run --rm -p 8000:8000 churnxgb-api
-```
-
-I still think of Docker here as a local convenience, not a full deployment story.
-
-## Repository Structure
-
-```text
-config/
-  config.yaml
-
-data/
-  raw/
-  interim/
-  processed/
-
-dashboard/
-  app.py
-
-frontend/
-  src/
-  dist/  # created after frontend build
-
-.runtime/
-  data/
-  models/
-    registry/
-    promoted/
-  outputs/
-    predictions/
-    targets/
-  reports/
-    evaluation/
-    figures/
-    monitoring/
-    *.json / *.csv / *.md summaries
-
-src/churnxgb/
-  data/
-  features/
-  labeling/
-  baselines/
-  modeling/
-  policy/
-  evaluation/
-  monitoring/
-  pipeline/
-  split/
-  utils/
-  llm/
-
-tests/
-```
-
-## Key Outputs
-
-### Runtime outputs
+Model and evaluation:
 
 - `.runtime/reports/model_comparison.csv`
 - `.runtime/reports/training_manifest.json`
-- `.runtime/reports/evaluation/classification_metrics.csv`
-- `.runtime/reports/evaluation/policy_metrics_all_models.csv`
-- `.runtime/reports/feature_importance.csv`
-- `.runtime/reports/monitoring/reference_profile.json`
+- `.runtime/reports/calibration_summary.md`
+- `.runtime/reports/evaluation_segments.csv`
+- `.runtime/reports/evaluation/lightgbm_test_frontier.csv`
+- `.runtime/reports/backtest_detail.csv`
+- `.runtime/reports/backtest_summary.csv`
+
+Monitoring:
+
 - `.runtime/reports/monitoring/drift_latest.json`
 - `.runtime/reports/monitoring/drift_history.csv`
+- `.runtime/reports/decision_drift.csv`
+
+Scoring outputs:
+
 - `.runtime/outputs/predictions/predictions_all.parquet`
-- `.runtime/outputs/predictions/predictions_inference.parquet`
 - `.runtime/outputs/targets/targets_all_k05.parquet`
 - `.runtime/outputs/targets/targets_all_k10.parquet`
 - `.runtime/outputs/targets/targets_all_k20.parquet`
-- `.runtime/models/promoted/production.json`
 
-### Tracking
+## Limitations
 
-- `mlruns_store/`
+- policy simulation is assumption-driven, not causal inference
+- experiment simulation is also assumption-driven
+- delayed-label production monitoring is not implemented
+- the API is local/dev oriented, not deployment infrastructure
+- segment logic is intentionally simple
 
-### Legacy / deprecated locations
+## Verdict
 
-These may still exist from earlier iterations, but they are no longer the primary live runtime outputs:
+Yes, this is good enough for a strong data science graduate student portfolio project.
 
-- `models/promoted/production.json`
-- `models/registry/...`
-- `outputs/...`
-- `reports/...`
-- `mlflow.db`
-- `mlruns/`
+Why:
 
-## Reproducibility Notes
+- the setup is realistic: leakage-aware snapshots, temporal splits, calibration, and budget-based targeting
+- the evaluation is broader than just AUC
+- the repo includes API serving, saved artifacts, monitoring, and a usable frontend
+- the results are solid but believable, which is a good thing
 
-- the pipeline logs a SHA-256 hash of the processed feature table as `data_version`
-- training logs metrics and artifacts to MLflow file-store under `mlruns_store/`
-- the promoted model record points to the selected run id and local promoted registry path under `.runtime/models/promoted/production.json`
-- each saved model carries an `inference_contract.json` file defining required inference inputs and clean prediction outputs
+The numbers are good, not magical:
 
-## Known Limitations
+- ROC-AUC is in a reasonable range around `0.72` to `0.73`
+- calibration improved Brier score and decision value
+- the budget frontier shows clear tradeoffs
+- segment analysis and backtests add credibility
 
-- delayed-label performance tracking after future labels mature is not implemented yet
-- monitoring is still lightweight compared with a real production monitoring stack
-- the FastAPI service is still minimal: no authentication, request logging, or deployment infrastructure
-- the Streamlit and React frontends are meant for portfolio/demo use, not production serving
-- the experiment simulation layer is assumption-driven business simulation, not causal inference from observed treatment/control data
-- the LLM layer is only as good as the backend tool outputs and available artifacts
+So my honest read is:
 
-## What I Would Improve Next
+- for a grad student: yes, this is a strong project
+- for internships or entry-level DS roles: definitely good enough
+- for senior applied ML roles: probably not enough by itself, but a very good base
 
-If I kept working on this, I would probably focus on:
-
-- better probability calibration analysis
-- delayed-label evaluation of scored cohorts
-- more structured cohort/error analysis
-- cleaner deployment setup around the API
-- a stronger frontend narrative layer, especially around recommendations and analyst workflow
-
-Those feel like the highest-value next steps without turning the project into something much bigger than it needs to be.
+The biggest strength is not just the model result. It is that the project shows end-to-end thinking: data setup, leakage control, model comparison, decision metrics, monitoring, and a simple product layer on top.

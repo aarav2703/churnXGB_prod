@@ -194,3 +194,42 @@ def top_psi_features(report: dict[str, Any], top_n: int = 10) -> list[dict[str, 
 
     items.sort(key=lambda x: x["psi"], reverse=True)
     return items[:top_n]
+
+
+def compute_decision_drift(
+    scored_df: pd.DataFrame,
+    budgets: list[float],
+    ranking_col: str,
+) -> pd.DataFrame:
+    if "invoice_month" not in scored_df.columns:
+        raise ValueError("Expected invoice_month to compute decision drift.")
+
+    rows: list[dict[str, Any]] = []
+    use = scored_df.copy()
+    use["invoice_month"] = use["invoice_month"].astype("period[M]").astype(str)
+
+    for month, month_df in use.groupby("invoice_month"):
+        month_df = month_df.sort_values(ranking_col, ascending=False).reset_index(drop=True)
+        total_rows = len(month_df)
+        for k in budgets:
+            top_n = max(1, int(round(total_rows * float(k))))
+            top = month_df.head(top_n).copy()
+            rows.append(
+                {
+                    "invoice_month": month,
+                    "budget_k": float(k),
+                    "ranking_policy": ranking_col,
+                    "n_rows": int(total_rows),
+                    "selected_count": int(top_n),
+                    "selected_share": float(top_n / total_rows) if total_rows > 0 else 0.0,
+                    "avg_churn_prob_top_k": float(top["churn_prob"].mean()) if "churn_prob" in top.columns else None,
+                    "avg_value_pos_top_k": float(top["value_pos"].mean()) if "value_pos" in top.columns else None,
+                    "var_at_k": float(top.loc[top["churn_90d"] == 1, "value_pos"].sum())
+                    if {"churn_90d", "value_pos"}.issubset(top.columns)
+                    else None,
+                    "avg_policy_net_benefit_top_k": float(top["policy_net_benefit"].mean())
+                    if "policy_net_benefit" in top.columns
+                    else None,
+                }
+            )
+    return pd.DataFrame(rows).sort_values(["invoice_month", "budget_k"]).reset_index(drop=True)

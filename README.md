@@ -1,43 +1,41 @@
 # ChurnXGB
 
-ChurnXGB is a churn-targeting project built around one practical question:
+ChurnXGB is a churn-targeting project built around a simple business question:
 
-If a business can only contact a small share of customers, who should it target to protect the most value?
+If a company can only contact a limited number of customers, who should it target to protect the most value?
 
-So this repo is not just a churn classifier. It is an offline decision system built on customer-month snapshots, temporal validation, calibrated probabilities, budget-based targeting, and simple local serving through FastAPI and a React dashboard.
+That is why this repo is not just a churn classifier. It is an offline decision system built on customer-month snapshots, temporal validation, calibrated probabilities, budget-based targeting, and a small product layer on top through FastAPI and React.
 
 ## What This Project Does
 
-At a high level, the system:
+The system:
 
 - builds point-in-time customer-month features from transaction data
 - predicts 90-day churn
 - compares `xgboost`, `lightgbm`, and `logistic_regression`
 - calibrates probabilities before deployment
 - ranks customers with both `policy_ml` and `policy_net_benefit`
-- evaluates results with standard metrics and decision metrics
+- evaluates both model quality and targeting quality
 - runs backtests and segment-level analysis
 - tracks feature drift and decision drift
 - serves saved outputs through FastAPI
-- exposes results in Streamlit and React dashboards
+- exposes the results in Streamlit and React dashboards
 
-The main idea is simple: a model with decent AUC is useful, but a targeting system is better if it can also show who to contact at 5%, 10%, or 20% budget and what the expected tradeoff looks like.
+The main point of the project is that churn prediction by itself is not enough. If the model says 5,000 customers are risky but the business can only contact 300 of them, then ranking and decision quality matter just as much as the classifier.
 
-## Why This Is Different From A Basic Churn Demo
+## Why I Built It This Way
 
-A lot of churn projects stop at:
+I kept the project centered on customer-month snapshots because that is a practical unit for retention analysis. It is detailed enough to capture behavior over time, but still simple enough to train, evaluate, and explain cleanly.
 
-"This customer has a high churn probability."
+I also wanted the project to reflect how an applied data science system usually works in practice:
 
-This repo goes further:
+- data is built in an offline pipeline
+- time leakage has to be controlled carefully
+- model quality is not the same thing as business usefulness
+- outputs should be saved and inspectable
+- a model is more convincing when it can be served, monitored, and explained
 
-- which customers should be targeted at a fixed budget?
-- how much value at risk sits inside the selected group?
-- how does the answer change when intervention cost matters?
-- does performance change across value bands and recency bands?
-- does the decision system stay stable over time?
-
-That makes it much closer to an applied data science project than a notebook-only model demo.
+So the repo is intentionally broader than a single notebook, but still small enough to understand end to end.
 
 ## Problem Setup
 
@@ -45,31 +43,35 @@ Each row is a customer-month snapshot.
 
 For each row:
 
-- features use only information available up to that month-end reference point
-- labels are based on future behavior after that point
+- features use only information available up to that row's month-end reference point
+- labels use behavior strictly after that point
 - churn means no purchase in the next 90 days
 
-The project keeps the data grain fixed at customer-month. It does not switch to online event scoring or a different architecture.
+This is important because it keeps the setup point-in-time correct. A churn project can look very strong on paper if leakage sneaks in through features or splits, so the pipeline is built to avoid that.
 
-## Repository Shape
+The project keeps the data grain fixed at customer-month. I did not switch it to online event scoring or a different architecture.
 
-The repo follows a simple production-style structure:
+## Repository Structure
+
+The repo follows a simple production-style shape:
 
 1. Offline pipeline
-   - feature build
+   - build features
    - train and compare models
-   - calibration
+   - calibrate probabilities
    - score the saved feature table
-   - write reports and artifacts
+   - write reports and saved artifacts
 
 2. FastAPI layer
    - prediction and explanation endpoints
-   - budget frontier, segment, and drift endpoints
+   - budget frontier, segment, backtest, and drift endpoints
    - policy simulation endpoints over saved outputs
 
 3. Frontends
    - Streamlit for artifact review
    - React for a more interactive decision dashboard
+
+I kept this structure because it makes the project feel closer to a small applied system rather than a one-off experiment.
 
 ## Data And Features
 
@@ -89,7 +91,7 @@ Core feature families:
 - average order value proxy: `aov_90d`
 - recency: `gap_days_prev`
 
-The feature set is intentionally compact and interpretable.
+I kept the feature set fairly compact on purpose. I wanted enough signal to make the system useful, but not so many features that it became hard to reason about what the model was doing.
 
 ## Models And Decision Scores
 
@@ -101,20 +103,31 @@ The training pipeline compares:
 
 It also keeps simple heuristic baselines for comparison.
 
-The main decision scores are:
+The two main decision scores are:
 
 - `policy_ml = churn_prob * value_pos`
 - `policy_net_benefit = expected_retained_value - expected_cost`
 
-`policy_ml` is useful when you mainly care about risk times value.
+I kept both because they answer slightly different questions.
 
-`policy_net_benefit` is useful when you want a cost-aware ranking under a targeting budget.
+`policy_ml` is the cleaner "risk times value" score.
 
-## Calibration
+`policy_net_benefit` is the more business-facing score because it tries to account for intervention cost and expected retained value.
 
-This repo now calibrates probabilities before deployment.
+That is also why the project uses budgeted decision metrics in addition to standard classification metrics.
 
-That matters because this system uses predicted probabilities inside downstream ranking and policy calculations. If the probabilities are poorly calibrated, the decision layer gets noisier even if the rank ordering looks okay.
+## Why Calibration Was Added
+
+One of the biggest upgrades was probability calibration.
+
+I added it because the project does not use predicted probabilities only for reporting. It uses them inside downstream targeting logic. That means poorly calibrated probabilities can hurt the decision layer even when ranking still looks decent.
+
+What changed:
+
+- the training pipeline fits a calibrator after the base model
+- the promoted model artifact stores calibration information
+- scoring uses calibrated probabilities by default
+- evaluation keeps both raw and calibrated comparisons
 
 From the latest verified run:
 
@@ -131,7 +144,72 @@ Calibration improved the decision layer in the latest run:
 - validation Brier score improved from `0.1832` to `0.1818`
 - test Brier score improved from `0.2170` to `0.2077`
 
-That does not mean calibration improves every metric in every setting. It just means it helped the deployed decision setup here, which is exactly why it was worth adding.
+That does not mean calibration improves every metric in every case. The reason I kept it is that in this project it improved probability quality and the final targeting setup.
+
+## Why Segment Analysis Was Added
+
+I added segment-level evaluation because average metrics can hide where the model is and is not actually useful.
+
+The project writes segment outputs using existing behavioral features:
+
+- value bands from `rev_sum_90d`
+- recency buckets from `gap_days_prev`
+- frequency buckets from `freq_90d`
+
+Saved output:
+
+- `.runtime/reports/evaluation_segments.csv`
+
+Latest verified run:
+
+- `27` segment rows
+
+Why I think this matters:
+
+- high-value segments carry most of the economic upside
+- low-value segments can still show lift but weak economics
+- this helps separate model accuracy from actionability
+
+That is much closer to how a business team would actually ask follow-up questions after a first model run.
+
+## Why Backtesting Was Added
+
+I added expanding-window backtesting because a single validation split can be misleading, especially in temporal problems.
+
+Saved outputs:
+
+- `.runtime/reports/backtest_detail.csv`
+- `.runtime/reports/backtest_summary.csv`
+
+Backtesting matters here because it shows whether the model and the policy stay reasonably stable across different time windows. That makes the results more believable than one lucky holdout.
+
+## Why Drift Monitoring Was Added
+
+I added two monitoring layers:
+
+1. Feature drift
+   - PSI by feature
+   - drift summary and alert counts
+
+2. Decision drift
+   - selected share by month
+   - average churn score in top-K
+   - average value in top-K
+   - monthly VaR@K trend
+
+Saved outputs:
+
+- `.runtime/reports/monitoring/drift_latest.json`
+- `.runtime/reports/monitoring/drift_history.csv`
+- `.runtime/reports/decision_drift.csv`
+
+I added decision drift specifically because I did not want monitoring to stop at "feature distribution changed." In a targeting project, it is also useful to see whether the selected population and its economic profile are changing over time.
+
+From the latest verified run:
+
+- feature drift status was `ok`
+- latest top PSI was `0.082`
+- decision drift had `75` monthly budget rows
 
 ## Latest Verified Results
 
@@ -152,10 +230,11 @@ These numbers come from a full pipeline run completed in this repo.
 | logistic_regression | 32,486.32 | 38,294.51 | 152,092.72 | 0.7338 | 0.2016 |
 | xgboost | 34,896.93 | 50,224.41 | 143,190.49 | 0.7224 | 0.2064 |
 
-This is a good example of why the project uses more than one metric:
+There are a couple of useful takeaways here:
 
-- logistic regression is still very competitive on standard classification metrics
-- lightgbm wins on the selected decision objective in the verified run
+- logistic regression stays competitive on standard classification metrics
+- lightgbm wins on the chosen decision objective in the verified run
+- this is exactly why I did not want to judge the system only by ROC-AUC
 
 ### Budget frontier for the promoted model
 
@@ -165,68 +244,7 @@ This is a good example of why the project uses more than one metric:
 | 10% | 128,102.77 | 53,074.73 | 278 | 0.2338 | 0.0617 | 0.6165 |
 | 20% | 235,673.05 | 67,672.40 | 556 | 0.2824 | 0.1490 | 0.7445 |
 
-This frontier is not flat, which is a good sign. The tradeoff between budget, value captured, and net benefit is visible and meaningful.
-
-## Segment Analysis
-
-The project writes segment-level evaluation using existing behavioral features:
-
-- value bands from `rev_sum_90d`
-- recency buckets from `gap_days_prev`
-- frequency buckets from `freq_90d`
-
-Verified output:
-
-- `.runtime/reports/evaluation_segments.csv`
-- `27` segment rows in the latest run
-
-What the latest run shows:
-
-- high-value segments carry most of the business value
-- mid-value segments can still contribute positive net benefit
-- low-value segments can show decent lift but weak or negative economics
-
-That is useful because it separates "the model can find churn" from "the action is worth paying for."
-
-## Backtesting
-
-The repo also runs expanding-window backtests instead of relying only on one split.
-
-Saved outputs:
-
-- `.runtime/reports/backtest_detail.csv`
-- `.runtime/reports/backtest_summary.csv`
-
-Why this matters:
-
-- it checks whether the model and policy are reasonably stable over time
-- it gives a better picture than a single holdout window
-
-## Monitoring
-
-There are two monitoring layers:
-
-1. Feature drift
-   - PSI by feature
-   - drift summary and alert counts
-
-2. Decision drift
-   - selected share by month
-   - average churn score in top-K
-   - average value in top-K
-   - monthly VaR@K trend
-
-Saved outputs:
-
-- `.runtime/reports/monitoring/drift_latest.json`
-- `.runtime/reports/monitoring/drift_history.csv`
-- `.runtime/reports/decision_drift.csv`
-
-From the latest verified run:
-
-- feature drift status was `ok`
-- latest top PSI was `0.082`
-- decision drift had `75` monthly budget rows
+This frontier is useful because it makes the budget tradeoff concrete. The business can see that going from 10% to 20% increases captured value and net benefit, but it also doubles the targeting volume.
 
 ## API
 
@@ -254,7 +272,7 @@ Main endpoints:
 - `POST /llm/query`
 - `POST /llm/explain_customer`
 
-The last two endpoints are optional helper layers on top of existing backend outputs. They do not replace the model or invent predictions.
+I kept the helper ask/explain endpoints in the repo, but they sit on top of existing backend outputs. They are not the core of the project, and they do not replace the actual model or policy logic.
 
 ## Dashboard Screenshots
 
@@ -388,26 +406,20 @@ Scoring outputs:
 
 ## Verdict
 
-Yes, this is good enough for a strong data science graduate student portfolio project.
+I think this is a strong grad-student data science project.
 
-Why:
+The results are good, but they are not suspiciously perfect:
 
-- the setup is realistic: leakage-aware snapshots, temporal splits, calibration, and budget-based targeting
-- the evaluation is broader than just AUC
-- the repo includes API serving, saved artifacts, monitoring, and a usable frontend
-- the results are solid but believable, which is a good thing
+- ROC-AUC is around `0.72` to `0.73`
+- calibration improves Brier score and decision value
+- the budget frontier shows meaningful tradeoffs
+- segment analysis shows where the economics are strong and weak
+- backtests and drift outputs make the system more believable
 
-The numbers are good, not magical:
+So my honest conclusion is:
 
-- ROC-AUC is in a reasonable range around `0.72` to `0.73`
-- calibration improved Brier score and decision value
-- the budget frontier shows clear tradeoffs
-- segment analysis and backtests add credibility
+- for a data science graduate student, yes, this is good enough
+- for internships and entry-level DS roles, it is definitely strong enough
+- for more senior applied ML roles, it would not be enough on its own, but it is a good foundation
 
-So my honest read is:
-
-- for a grad student: yes, this is a strong project
-- for internships or entry-level DS roles: definitely good enough
-- for senior applied ML roles: probably not enough by itself, but a very good base
-
-The biggest strength is not just the model result. It is that the project shows end-to-end thinking: data setup, leakage control, model comparison, decision metrics, monitoring, and a simple product layer on top.
+The strongest part is not one metric. The strongest part is that the project shows the whole chain: point-in-time data setup, leakage control, model comparison, calibration, decision metrics, monitoring, API serving, and a working dashboard.

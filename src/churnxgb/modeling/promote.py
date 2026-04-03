@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
-import json
 
-from churnxgb.paths import resolve_runtime_root
+from churnxgb.artifacts import ArtifactPaths
 from churnxgb.utils.io import atomic_write_json
 
 
@@ -17,21 +16,21 @@ def write_promotion_record(
     """
     Write a lightweight 'production pointer' so scoring can use the promoted run.
     """
-    runtime_root = resolve_runtime_root(repo_root)
-    out_dir = runtime_root / "models" / "promoted"
+    artifacts = ArtifactPaths.for_repo(repo_root)
+    out_dir = artifacts.promoted_dir
     out_dir.mkdir(parents=True, exist_ok=True)
 
     rec = {
         "run_id": run_id,
         "model_name": model_name,
-        "registry_path": str(runtime_root / "models" / "registry" / model_name),
+        "registry_path": str(artifacts.model_registry_dir(model_name)),
     }
     if selection_metric is not None:
         rec["selection_metric"] = selection_metric
     if selection_value is not None:
         rec["selection_value"] = float(selection_value)
 
-    out_path = out_dir / "production.json"
+    out_path = artifacts.promotion_record_path()
     atomic_write_json(out_path, rec)
 
     return out_path

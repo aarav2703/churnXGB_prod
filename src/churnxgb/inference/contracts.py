@@ -5,7 +5,7 @@ import json
 
 import pandas as pd
 
-from churnxgb.paths import resolve_runtime_root
+from churnxgb.artifacts import ArtifactPaths
 from churnxgb.utils.io import atomic_write_json
 
 
@@ -43,8 +43,10 @@ def build_inference_contract(feature_cols: list[str]) -> dict:
 def write_inference_contract(
     repo_root: Path, model_name: str, feature_cols: list[str]
 ) -> Path:
-    runtime_root = resolve_runtime_root(repo_root)
-    out_path = runtime_root / "models" / "registry" / model_name / "inference_contract.json"
+    out_path = (
+        ArtifactPaths.for_repo(repo_root).model_registry_dir(model_name)
+        / "inference_contract.json"
+    )
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     contract = build_inference_contract(feature_cols)
@@ -56,8 +58,10 @@ def write_inference_contract(
 def load_inference_contract(
     repo_root: Path, model_name: str, feature_cols: list[str] | None = None
 ) -> dict:
-    runtime_root = resolve_runtime_root(repo_root)
-    path = runtime_root / "models" / "registry" / model_name / "inference_contract.json"
+    path = (
+        ArtifactPaths.for_repo(repo_root).model_registry_dir(model_name)
+        / "inference_contract.json"
+    )
     if not path.exists():
         if feature_cols is None:
             raise FileNotFoundError(f"Inference contract not found: {path}")

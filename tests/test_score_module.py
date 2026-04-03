@@ -6,6 +6,7 @@ import uuid
 
 import pandas as pd
 
+from churnxgb.artifacts import ArtifactPaths
 from churnxgb.inference.contracts import build_inference_contract, PREDICTION_OUTPUT_COLUMNS
 from churnxgb.modeling.model_utils import save_model_artifacts
 from churnxgb.monitoring.drift import build_reference_profile_with_counts
@@ -218,7 +219,7 @@ def test_build_outputs_writes_prediction_artifacts() -> None:
 
 def test_build_outputs_appends_drift_history_and_alerts_when_reference_exists() -> None:
     repo_root = _make_repo_root()
-    monitoring_dir = repo_root / "reports" / "monitoring"
+    monitoring_dir = ArtifactPaths.for_repo(repo_root).monitoring_dir
     monitoring_dir.mkdir(parents=True, exist_ok=True)
     reference_df = pd.DataFrame(
         {

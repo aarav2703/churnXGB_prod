@@ -22,6 +22,10 @@ frontend/dist/
 tests_artifacts/
 pytest-cache-files-*/
 
+# Local agent/session notes
+AGENTS.md
+EXECUTION_PLAN.md
+
 # Generated data and model artifacts
 data/interim/
 data/processed/

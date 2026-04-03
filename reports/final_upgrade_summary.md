@@ -3,16 +3,16 @@
 ## What Changed
 
 - Expanded evaluation beyond Value-at-Risk with ROC-AUC, PR-AUC, Brier score, Precision@K, Recall@K, Lift@K, and calibration curve data.
-- Added saved machine-readable evaluation outputs in `reports/evaluation/` and saved plots in `reports/figures/`.
+- Added saved machine-readable evaluation outputs in `.runtime/reports/evaluation/` and saved plots in `.runtime/reports/figures/`.
 - Added multi-model comparison across:
   - XGBoost
   - Logistic Regression
   - LightGBM
 - Added rolling expanding-window temporal backtesting across 9 chronological folds.
 - Added interpretability artifacts:
-  - `reports/feature_importance.csv`
-  - `reports/feature_analysis.md`
-  - `reports/figures/feature_importance.png`
+  - `.runtime/reports/feature_importance.csv`
+  - `.runtime/reports/feature_analysis.md`
+  - `.runtime/reports/figures/feature_importance.png`
 - Added a Streamlit dashboard at `dashboard/app.py` that reads saved artifacts rather than retraining.
 - Added reproducibility support with `requirements.txt`.
 - Added targeted tests for temporal splitting, leakage-safe feature selection, feature schema, and metric sanity.
@@ -57,7 +57,7 @@ Promoted model: `logistic_regression`
 
 ## Whether Calibration Improved
 
-- A calibration curve is now generated and saved to `reports/figures/test_calibration_curve.png`.
+- A calibration curve is now generated and saved to `.runtime/reports/figures/test_calibration_curve.png`.
 - Among the compared models, `logistic_regression` had the lowest Brier score on both validation and test, which is the strongest calibration signal currently tracked in the repository.
 - Improvement versus the pre-upgrade repository cannot be measured directly because Brier score and calibration outputs did not previously exist.
 

@@ -4,10 +4,12 @@ from pathlib import Path
 
 import pandas as pd
 
+from churnxgb.artifacts import ArtifactPaths
+
 
 def test_processed_feature_schema_smoke() -> None:
     root = Path(__file__).resolve().parents[1]
-    feats_path = root / "data" / "processed" / "customer_month_features.parquet"
+    feats_path = ArtifactPaths.for_repo(root).feature_table_path()
     assert feats_path.exists()
 
     df = pd.read_parquet(feats_path)

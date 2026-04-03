@@ -7,8 +7,8 @@ import pandas as pd
 import streamlit as st
 import yaml
 
+from churnxgb.artifacts import ArtifactPaths
 from churnxgb.modeling.interpretability import explain_prediction_rows
-from churnxgb.paths import resolve_runtime_root
 from churnxgb.pipeline.score import load_model, simulate_policy_by_budget
 from churnxgb.policy.scoring import get_decision_policy_config
 from churnxgb.evaluation.experiment_simulation import (
@@ -69,7 +69,7 @@ def main() -> None:
     st.set_page_config(page_title="ChurnXGB Dashboard", layout="wide")
     st.title("ChurnXGB Portfolio Dashboard")
     st.caption("Leakage-aware churn targeting with budget-constrained policy evaluation")
-    runtime_root = resolve_runtime_root(ROOT)
+    runtime_root = ArtifactPaths.for_repo(ROOT).runtime_root
     reports = runtime_root / "reports"
     eval_dir = reports / "evaluation"
     figures = reports / "figures"

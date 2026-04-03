@@ -4,8 +4,8 @@ from pathlib import Path
 import json
 import joblib
 
+from churnxgb.artifacts import ArtifactPaths
 from churnxgb.inference.contracts import write_inference_contract
-from churnxgb.paths import resolve_runtime_root
 from churnxgb.utils.io import atomic_joblib_dump, atomic_write_json
 
 
@@ -16,12 +16,12 @@ def save_model_artifacts(
     model_name: str = "churn_xgb_v1",
 ) -> dict:
     """
-    Save model + feature columns to models/registry/.
+    Save model + feature columns under the canonical runtime registry.
 
     Returns metadata dict including paths.
     """
-    runtime_root = resolve_runtime_root(repo_root)
-    out_dir = runtime_root / "models" / "registry" / model_name
+    artifacts = ArtifactPaths.for_repo(repo_root)
+    out_dir = artifacts.model_registry_dir(model_name)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     model_path = out_dir / "model.joblib"
@@ -54,12 +54,9 @@ def load_model_artifacts(
     repo_root: Path, model_name: str = "churn_xgb_v1"
 ) -> tuple[object, list[str], dict]:
     """
-    Load model + feature columns from models/registry/<model_name>/.
+    Load model + feature columns from the canonical runtime registry.
     """
-    import json
-
-    runtime_root = resolve_runtime_root(repo_root)
-    base = runtime_root / "models" / "registry" / model_name
+    base = ArtifactPaths.for_repo(repo_root).model_registry_dir(model_name)
     model = joblib.load(base / "model.joblib")
 
     with open(base / "feature_cols.json", "r", encoding="utf-8") as f:

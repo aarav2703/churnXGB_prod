@@ -10,6 +10,7 @@ import pandas as pd
 
 import mlflow
 
+from churnxgb.artifacts import ArtifactPaths
 from churnxgb.modeling.model_utils import load_model_artifacts
 from churnxgb.inference.contracts import (
     build_prediction_output,
@@ -26,7 +27,6 @@ from churnxgb.monitoring.alerts import (
 from churnxgb.monitoring.drift import drift_report, top_psi_features
 from churnxgb.monitoring.drift import compute_decision_drift
 from churnxgb.monitoring.history import build_drift_history_frame
-from churnxgb.paths import resolve_runtime_root
 from churnxgb.policy.scoring import (
     add_policy_scores,
     get_decision_policy_config,
@@ -44,8 +44,7 @@ def _resolve_tracking_uri(repo_root: Path, tracking_uri: str) -> str:
 
 
 def _resolve_promotion(repo_root: Path) -> dict | None:
-    runtime_root = resolve_runtime_root(repo_root)
-    promoted_path = runtime_root / "models" / "promoted" / "production.json"
+    promoted_path = ArtifactPaths.for_repo(repo_root).promotion_record_path()
     if promoted_path.exists():
         with open(promoted_path, "r", encoding="utf-8") as f:
             return json.load(f)
@@ -208,11 +207,11 @@ def build_outputs(
     monitoring_cfg: dict[str, float] | None = None,
     decision_cfg: dict | None = None,
 ) -> dict:
-    runtime_root = resolve_runtime_root(repo_root)
-    ref_path = runtime_root / "reports" / "monitoring" / "reference_profile.json"
-    mon_dir = runtime_root / "reports" / "monitoring"
+    artifacts = ArtifactPaths.for_repo(repo_root)
+    ref_path = artifacts.monitoring_dir / "reference_profile.json"
+    mon_dir = artifacts.monitoring_dir
     mon_dir.mkdir(parents=True, exist_ok=True)
-    reports_dir = runtime_root / "reports"
+    reports_dir = artifacts.reports_dir
     reports_dir.mkdir(parents=True, exist_ok=True)
 
     drift_out_path = mon_dir / "drift_latest.json"
@@ -257,14 +256,14 @@ def build_outputs(
     else:
         drift_history_df = None
 
-    pred_dir = runtime_root / "outputs" / "predictions"
-    targ_dir = runtime_root / "outputs" / "targets"
+    pred_dir = artifacts.predictions_dir
+    targ_dir = artifacts.targets_dir
     pred_dir.mkdir(parents=True, exist_ok=True)
     targ_dir.mkdir(parents=True, exist_ok=True)
 
-    pred_path = pred_dir / f"predictions_{split_name}.parquet"
-    inference_pred_path = pred_dir / f"predictions_inference.parquet"
-    stage_dir = runtime_root / ".staging" / f"score_{uuid.uuid4().hex}"
+    pred_path = artifacts.predictions_path(split_name)
+    inference_pred_path = artifacts.inference_predictions_path()
+    stage_dir = artifacts.runtime_root / ".staging" / f"score_{uuid.uuid4().hex}"
     stage_pred_dir = stage_dir / "predictions"
     stage_targ_dir = stage_dir / "targets"
     stage_mon_dir = stage_dir / "monitoring"
@@ -348,14 +347,14 @@ def main() -> None:
 
     with open(cfg_path, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
-    runtime_root = resolve_runtime_root(repo_root, cfg)
+    artifacts = ArtifactPaths.for_repo(repo_root, cfg)
 
     budgets = [float(x) for x in cfg["eval"]["budgets"]]
     decision_cfg = get_decision_policy_config(cfg)
     monitoring_cfg = get_monitoring_alert_config(cfg)
 
     # Load features
-    feats_path = runtime_root / "data" / "processed" / "customer_month_features.parquet"
+    feats_path = artifacts.feature_table_path()
     df = pd.read_parquet(feats_path)
     data_version = sha256_file(feats_path)
 

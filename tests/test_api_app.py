@@ -14,6 +14,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
 from churnxgb.api.app import create_app
+from churnxgb.artifacts import ArtifactPaths
 from churnxgb.modeling.model_utils import save_model_artifacts
 from churnxgb.pipeline.score import build_outputs
 
@@ -53,6 +54,22 @@ def _write_config(repo_root: Path) -> None:
         )
 
 
+def _llm_base_payload() -> dict:
+    return {
+        "page": "Overview",
+        "selected_budget": 10,
+        "selected_policy": "policy_net_benefit",
+        "selected_model": "logistic_regression",
+        "selected_segment": None,
+        "selected_customer": None,
+        "chart_data": None,
+        "key_metrics": {},
+        "baseline_metrics": {},
+        "caveats": ["Economic outputs are assumption-driven."],
+        "assumption_flags": ["No causal uplift is estimated."],
+    }
+
+
 def _feature_cols() -> list[str]:
     return [
         "rev_sum_30d",
@@ -68,11 +85,12 @@ def _feature_cols() -> list[str]:
 
 
 def _write_summary_artifacts(repo_root: Path) -> None:
-    reports_dir = repo_root / "reports"
-    eval_dir = reports_dir / "evaluation"
-    monitoring_dir = reports_dir / "monitoring"
-    targets_dir = repo_root / "outputs" / "targets"
-    promoted_dir = repo_root / "models" / "promoted"
+    artifacts = ArtifactPaths.for_repo(repo_root)
+    reports_dir = artifacts.reports_dir
+    eval_dir = artifacts.evaluation_dir
+    monitoring_dir = artifacts.monitoring_dir
+    targets_dir = artifacts.targets_dir
+    promoted_dir = artifacts.promoted_dir
     reports_dir.mkdir(parents=True, exist_ok=True)
     eval_dir.mkdir(parents=True, exist_ok=True)
     monitoring_dir.mkdir(parents=True, exist_ok=True)
@@ -213,7 +231,7 @@ def _write_summary_artifacts(repo_root: Path) -> None:
         ]
     ).to_parquet(targets_dir / "targets_all_k10.parquet", index=False)
 
-    predictions_dir = repo_root / "outputs" / "predictions"
+    predictions_dir = artifacts.predictions_dir
     predictions_dir.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(
         [
@@ -285,7 +303,7 @@ def _write_summary_artifacts(repo_root: Path) -> None:
             {
                 "run_id": "run-123",
                 "model_name": "churn_xgb_v1",
-                "registry_path": str(repo_root / "models" / "registry" / "churn_xgb_v1"),
+                "registry_path": str(artifacts.model_registry_dir("churn_xgb_v1")),
             },
             f,
         )
@@ -396,7 +414,7 @@ def test_api_artifact_endpoints_return_structured_json() -> None:
             assert comparison.status_code == 200
             assert len(comparison.json()["rows"]) == 1
 
-            feature_importance_path = repo_root / "reports" / "feature_importance.csv"
+            feature_importance_path = ArtifactPaths.for_repo(repo_root).reports_dir / "feature_importance.csv"
             pd.DataFrame(
                 [
                     {"feature": "rev_sum_90d", "importance": 0.42, "source": "shap_mean_abs"},
@@ -448,12 +466,20 @@ def test_api_artifact_endpoints_return_structured_json() -> None:
             assert explain_saved.json()["identifiers"]["CustomerID"] == 1
 
             llm_explainer = client.post(
-                "/llm/explain_customer",
-                json={"customer_id": "1", "invoice_month": "2010-01", "top_n": 3},
+                "/llm/explain/customer",
+                json={
+                    **_llm_base_payload(),
+                    "page": "Customer Explorer",
+                    "customer_id": "1",
+                    "invoice_month": "2010-01",
+                    "top_n": 3,
+                },
             )
             assert llm_explainer.status_code == 200
             assert "answer" in llm_explainer.json()
-            assert llm_explainer.json()["tools_used"][0]["name"] == "get_customer_decision_context"
+            assert llm_explainer.json()["action"] == "explain_customer"
+            assert "sections" in llm_explainer.json()
+            assert "what_this_shows" in llm_explainer.json()["sections"]
     finally:
         shutil.rmtree(repo_root, ignore_errors=True)
 
@@ -585,7 +611,7 @@ def test_api_simulate_experiment_returns_structured_results() -> None:
         shutil.rmtree(repo_root, ignore_errors=True)
 
 
-def test_api_llm_query_routes_to_tool_and_returns_grounded_answer() -> None:
+def test_api_llm_policy_explanation_returns_grounded_answer() -> None:
     repo_root = _make_repo_root()
     _write_config(repo_root)
     _write_summary_artifacts(repo_root)
@@ -599,24 +625,27 @@ def test_api_llm_query_routes_to_tool_and_returns_grounded_answer() -> None:
     try:
         with TestClient(create_app(repo_root)) as client:
             response = client.post(
-                "/llm/query",
+                "/llm/explain/policy",
                 json={
-                    "query": "Who should I target at 10% budget?",
-                    "include_raw_data": True,
+                    **_llm_base_payload(),
+                    "page": "Policy Explorer",
+                    "baseline_policy": "policy_ml",
+                    "comparison_policy": "policy_net_benefit",
+                    "debug": True,
                 },
             )
 
             assert response.status_code == 200
             body = response.json()
             assert "answer" in body
-            assert body["tools_used"][0]["name"] == "get_targets"
-            assert body["raw_data"][0]["ok"] is True
-            assert body["raw_data"][0]["data"]["budget_pct"] == 10
+            assert body["action"] == "explain_policy"
+            assert body["sections"]["what_this_shows"]
+            assert body["context"]["policy_comparison"]["budget_k"] == 0.1
     finally:
         shutil.rmtree(repo_root, ignore_errors=True)
 
 
-def test_api_llm_query_can_answer_project_overview_questions() -> None:
+def test_api_llm_chart_explanation_returns_grounded_answer() -> None:
     repo_root = _make_repo_root()
     _write_config(repo_root)
     _write_summary_artifacts(repo_root)
@@ -630,19 +659,79 @@ def test_api_llm_query_can_answer_project_overview_questions() -> None:
     try:
         with TestClient(create_app(repo_root)) as client:
             response = client.post(
-                "/llm/query",
+                "/llm/explain/chart",
                 json={
-                    "query": "How does this project work and how do I run it?",
-                    "include_raw_data": True,
+                    **_llm_base_payload(),
+                    "page": "Policy Explorer",
+                    "chart_type": "budget_frontier",
+                    "debug": True,
                 },
             )
 
             assert response.status_code == 200
             body = response.json()
             assert "answer" in body
-            assert body["tools_used"][0]["name"] == "get_project_overview"
-            assert body["raw_data"][0]["ok"] is True
-            assert body["raw_data"][0]["data"]["entrypoints"]["train"] == "python -m churnxgb.pipeline.train"
+            assert body["action"] == "explain_chart"
+            assert body["sections"]["why_it_matters"]
+            assert len(body["context"]["chart_data"]) == 2
+    finally:
+        shutil.rmtree(repo_root, ignore_errors=True)
+
+
+def test_api_llm_budget_tradeoff_recommendation_and_risk_actions() -> None:
+    repo_root = _make_repo_root()
+    _write_config(repo_root)
+    _write_summary_artifacts(repo_root)
+    save_model_artifacts(
+        repo_root,
+        _trained_logistic_pipeline(),
+        _feature_cols(),
+        model_name="churn_xgb_v1",
+    )
+
+    try:
+        with TestClient(create_app(repo_root)) as client:
+            budget_tradeoff = client.post(
+                "/llm/explain/budget-tradeoff",
+                json={**_llm_base_payload(), "page": "Policy Explorer"},
+            )
+            assert budget_tradeoff.status_code == 200
+            assert budget_tradeoff.json()["action"] == "explain_budget_tradeoff"
+
+            recommendation = client.post(
+                "/llm/summarize/recommendation",
+                json={**_llm_base_payload(), "page": "Overview"},
+            )
+            assert recommendation.status_code == 200
+            assert recommendation.json()["action"] == "summarize_recommendation"
+
+            risk = client.post(
+                "/llm/summarize/risk",
+                json={**_llm_base_payload(), "page": "Monitoring & Trust"},
+            )
+            assert risk.status_code == 200
+            assert risk.json()["action"] == "summarize_risk"
+            assert "caution" in risk.json()["sections"]
+    finally:
+        shutil.rmtree(repo_root, ignore_errors=True)
+
+
+def test_api_llm_query_is_deprecated() -> None:
+    repo_root = _make_repo_root()
+    _write_config(repo_root)
+    save_model_artifacts(repo_root, DummyModel(), _feature_cols(), model_name="churn_xgb_v1")
+
+    try:
+        with TestClient(create_app(repo_root)) as client:
+            response = client.post(
+                "/llm/query",
+                json={"query": "What should I do?", "include_raw_data": True},
+            )
+
+            assert response.status_code == 200
+            body = response.json()
+            assert body["deprecated"] is True
+            assert body["action"] == "deprecated_query"
     finally:
         shutil.rmtree(repo_root, ignore_errors=True)
 

@@ -8,7 +8,7 @@
 - Validation rows: 1,952
 - Test rows: 2,779
 
-These split sizes were verified from `data/processed/customer_month_features.parquet` using the configured temporal windows:
+These split sizes were verified from `.runtime/data/processed/customer_month_features.parquet` using the configured temporal windows:
 - train through `2010-06`
 - validation `2010-07` to `2010-08`
 - test `2010-09` to `2010-10`
@@ -34,7 +34,7 @@ Why it won:
 - Lift@10%: 1.0717
 - Value-at-Risk@10%: 165,919.06
 
-Promotion metadata was verified in `models/promoted/production.json`:
+Promotion metadata was verified in `.runtime/models/promoted/production.json`:
 - run id: `b3fccc8ed96645b185b38ab1d024a970`
 - registry artifact: `churn_logistic_regression_v1`
 
@@ -89,17 +89,17 @@ ML policy uplift at 10%:
 
 The following regenerated artifacts were verified after the rerun:
 - `reports/final_upgrade_summary.md`
-- `reports/model_eval_summary.md`
-- `reports/model_comparison.csv`
-- `reports/backtest_summary.csv`
-- `reports/feature_importance.csv`
-- `reports/figures/test_roc_curve.png`
-- `reports/figures/test_pr_curve.png`
-- `reports/figures/test_lift_curve.png`
-- `reports/figures/test_calibration_curve.png`
-- `reports/monitoring/drift_latest.json`
-- `outputs/predictions/predictions_all.parquet`
-- `outputs/targets/targets_all_k10.parquet`
+- `.runtime/reports/model_eval_summary.md`
+- `.runtime/reports/model_comparison.csv`
+- `.runtime/reports/backtest_summary.csv`
+- `.runtime/reports/feature_importance.csv`
+- `.runtime/reports/figures/test_roc_curve.png`
+- `.runtime/reports/figures/test_pr_curve.png`
+- `.runtime/reports/figures/test_lift_curve.png`
+- `.runtime/reports/figures/test_calibration_curve.png`
+- `.runtime/reports/monitoring/drift_latest.json`
+- `.runtime/outputs/predictions/predictions_all.parquet`
+- `.runtime/outputs/targets/targets_all_k10.parquet`
 - MLflow run directories for the latest training and scoring runs
 
 ## Dashboard Validation

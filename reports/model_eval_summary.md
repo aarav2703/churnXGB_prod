@@ -19,7 +19,7 @@ Best promoted model: `logistic_regression` selected by validation `value_at_risk
 
 ## Figures
 
-- `reports/figures/test_roc_curve.png`
-- `reports/figures/test_pr_curve.png`
-- `reports/figures/test_lift_curve.png`
-- `reports/figures/test_calibration_curve.png`
+- `.runtime/reports/figures/test_roc_curve.png`
+- `.runtime/reports/figures/test_pr_curve.png`
+- `.runtime/reports/figures/test_lift_curve.png`
+- `.runtime/reports/figures/test_calibration_curve.png`

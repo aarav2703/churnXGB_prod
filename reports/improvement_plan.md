@@ -8,8 +8,8 @@
 - Training currently uses a temporal split, heuristic baselines, one XGBoost classifier, MLflow logging, and promotion metadata in `src/churnxgb/pipeline/train.py`.
 - Business-aware policy scoring is implemented in `src/churnxgb/policy/scoring.py`.
 - Current evaluation computes Value-at-Risk style metrics at 5%, 10%, and 20% budgets in `src/churnxgb/evaluation/metrics.py` and `src/churnxgb/evaluation/report.py`.
-- Scoring writes predictions to `outputs/predictions/predictions_all.parquet` and target lists to `outputs/targets/`.
-- Monitoring writes a drift reference profile and PSI-based drift report in `reports/monitoring/`.
+- Scoring writes predictions to `.runtime/outputs/predictions/predictions_all.parquet` and target lists to `.runtime/outputs/targets/`.
+- Monitoring writes a drift reference profile and PSI-based drift report in `.runtime/reports/monitoring/`.
 - The runtime environment already has `sklearn`, `xgboost`, `lightgbm`, `mlflow`, `matplotlib`, `streamlit`, `shap`, and `pytest` available.
 
 ## Current Verified Limitations
@@ -17,7 +17,7 @@
 - Evaluation is narrow: no ROC-AUC, PR-AUC, Brier score, calibration analysis, precision@K, recall@K, or lift/gains outputs are implemented.
 - There is only one learned model family in the training pipeline.
 - There is no rolling temporal backtest summary across multiple folds.
-- There are no interpretability artifacts in `reports/`.
+- There are no interpretability artifacts in `.runtime/reports/`.
 - There is no dashboard app.
 - `tests/` is empty.
 - `pyproject.toml` does not declare the actual runtime dependencies used by the project.

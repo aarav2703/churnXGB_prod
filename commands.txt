@@ -1,0 +1,62 @@
+Project startup order
+
+1. Install Python dependencies
+pip install -r requirements.txt
+
+2. Install frontend dependencies
+cd frontend
+npm install
+cd ..
+
+3. Set PYTHONPATH for direct module execution
+PowerShell:
+$env:PYTHONPATH="src"
+
+4. Build features
+python -m churnxgb.pipeline.build_features
+
+5. Train models and write evaluation artifacts
+python -m churnxgb.pipeline.train
+
+6. Score with the promoted/local champion and write predictions, targets, and monitoring artifacts
+python -m churnxgb.pipeline.score
+
+7. Start the FastAPI backend
+uvicorn churnxgb.api.app:app --host 0.0.0.0 --port 8000
+
+8. In a new terminal, start the React frontend
+cd frontend
+npm run dev
+
+9. Open the frontend in your browser
+http://127.0.0.1:5173
+
+Useful checks
+
+Run all tests:
+pytest -q
+
+Run API tests only:
+pytest -q tests/test_api_app.py
+
+Build frontend for production:
+cd frontend
+npm run build
+
+If artifacts already exist and you only want to use the app
+
+1. PowerShell:
+$env:PYTHONPATH="src"
+
+2. Start API:
+uvicorn churnxgb.api.app:app --host 0.0.0.0 --port 8000
+
+3. In a new terminal:
+cd frontend
+npm run dev
+
+Optional legacy dashboard
+
+PowerShell:
+$env:PYTHONPATH="src"
+streamlit run dashboard/app.py

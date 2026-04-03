@@ -9,6 +9,7 @@ import mlflow
 import pandas as pd
 import yaml
 
+from churnxgb.artifacts import ArtifactPaths
 from churnxgb.baselines.heuristics import add_heuristics
 from churnxgb.evaluation.backtest import run_backtest
 from churnxgb.evaluation.classification import (
@@ -30,7 +31,6 @@ from churnxgb.modeling.model_utils import save_model_artifacts
 from churnxgb.modeling.promote import write_promotion_record
 from churnxgb.modeling.train_models import train_and_predict
 from churnxgb.monitoring.drift import build_reference_profile_with_counts
-from churnxgb.paths import resolve_runtime_root
 from churnxgb.policy.scoring import add_policy_scores, get_decision_policy_config
 from churnxgb.split.temporal import temporal_split
 from churnxgb.utils.hashing import sha256_file
@@ -187,10 +187,10 @@ def _write_model_eval_summary(
         "captured_churners",
     ]].to_markdown(index=False)
     content += "\n\n## Figures\n\n"
-    content += "- `reports/figures/test_roc_curve.png`\n"
-    content += "- `reports/figures/test_pr_curve.png`\n"
-    content += "- `reports/figures/test_lift_curve.png`\n"
-    content += "- `reports/figures/test_calibration_curve.png`\n"
+    content += "- `.runtime/reports/figures/test_roc_curve.png`\n"
+    content += "- `.runtime/reports/figures/test_pr_curve.png`\n"
+    content += "- `.runtime/reports/figures/test_lift_curve.png`\n"
+    content += "- `.runtime/reports/figures/test_calibration_curve.png`\n"
     atomic_write_text(out_path, content)
 
 
@@ -251,9 +251,9 @@ def main() -> None:
 
     with open(cfg_path, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
-    runtime_root = resolve_runtime_root(repo_root, cfg)
+    artifacts = ArtifactPaths.for_repo(repo_root, cfg)
 
-    feats_path = runtime_root / "data" / "processed" / "customer_month_features.parquet"
+    feats_path = artifacts.feature_table_path()
     df = pd.read_parquet(feats_path)
     data_version = sha256_file(feats_path)
 
@@ -269,9 +269,9 @@ def main() -> None:
     decision_cfg = get_decision_policy_config(cfg)
     deployed_policy = decision_cfg.get("targeting_policy", "policy_net_benefit")
 
-    reports_dir = runtime_root / "reports"
-    eval_dir = reports_dir / "evaluation"
-    figures_dir = reports_dir / "figures"
+    reports_dir = artifacts.reports_dir
+    eval_dir = artifacts.evaluation_dir
+    figures_dir = artifacts.figures_dir
     eval_dir.mkdir(parents=True, exist_ok=True)
     figures_dir.mkdir(parents=True, exist_ok=True)
 
@@ -540,7 +540,7 @@ def main() -> None:
         f"{best_model} Budget Frontier",
     )
 
-    ref_path = reports_dir / "monitoring" / "reference_profile.json"
+    ref_path = artifacts.monitoring_dir / "reference_profile.json"
     build_reference_profile_with_counts(
         best_meta["train_scored"],
         feature_cols,
